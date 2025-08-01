@@ -210,6 +210,8 @@
             const isSelfClose = (t) => /^\/?>$/.test(t);
             const isAttribute = (t) => /^[\w:-]+="[^"]*"$/.test(t);
 
+            const extractTagName = (t) => t.replace(/^<\/?/, '');
+
             const splitAttribute = (attr) => {
                 const match = attr.match(/^([\w:-]+)=(")([^"]*)(")$/);
                 if (!match) return null;
@@ -232,7 +234,7 @@
                         result += escapeHTML(c1);
                     } else {
                         if (!inDiff) {
-                            result += '<span class="diff-change-word">';
+                            result += '<span class="diff-change-word" title="Word changed">';
                             inDiff = true;
                         }
                         result += escapeHTML(c1);
@@ -246,21 +248,26 @@
                 const t1 = tokens1[i];
                 const t2 = tokens2[i] || '';
 
+                // Check if both tokens are tags
                 if (isTag(t1) && isTag(t2)) {
+                    // Compare tag names exactly, including slash
                     if (t1 === t2) {
+                        // Same tag, no highlight
                         if (inHighlight) {
                             html += '</span>';
                             inHighlight = false;
                         }
                         html += escapeHTML(t1);
                     } else {
+                        // Different tags (different name, or one closing, other opening)
                         if (!inHighlight) {
-                            html += '<span class="diff-change-word">';
+                            html += '<span class="diff-change-word" title="Tag changed">';
                             inHighlight = true;
                         }
                         html += escapeHTML(t1);
                     }
                 } else if (isAttribute(t1) && isAttribute(t2)) {
+                    // Compare attribute values only
                     const attr1 = splitAttribute(t1);
                     const attr2 = splitAttribute(t2);
 
@@ -269,17 +276,24 @@
                             html += '</span>';
                             inHighlight = false;
                         }
+                        // Output attribute name and equal and opening quote
                         html += escapeHTML(attr1.name) + '=' + attr1.quote1;
+
+                        // Highlight differences inside values
                         html += diffInnerText(attr1.value, attr2.value);
+
+                        // Closing quote
                         html += attr1.quote2;
                     } else {
+                        // Different attribute names or invalid parsing, highlight whole attribute
                         if (!inHighlight) {
-                            html += '<span class="diff-change-word">';
+                            html += '<span class="diff-change-word" title="Attribute changed">';
                             inHighlight = true;
                         }
                         html += escapeHTML(t1);
                     }
                 } else if (!isTag(t1) && !isSelfClose(t1) && !isAttribute(t1)) {
+                    // Plain text or whitespace
                     if (t1 === t2) {
                         if (inHighlight) {
                             html += '</span>';
@@ -288,12 +302,13 @@
                         html += escapeHTML(t1);
                     } else {
                         if (!inHighlight) {
-                            html += '<span class="diff-change-word">';
+                            html += '<span class="diff-change-word" title="Text changed">';
                             inHighlight = true;
                         }
                         html += escapeHTML(t1);
                     }
                 } else {
+                    // For self-closing tokens or unmatched cases treat as equal (no highlight)
                     if (inHighlight) {
                         html += '</span>';
                         inHighlight = false;
@@ -383,23 +398,31 @@
                 let class1 = '', class2 = '';
                 let content1 = escapeHTML(paddedL1);
                 let content2 = escapeHTML(paddedL2);
+                let title1 = '';
+                let title2 = '';
 
                 if (l1.trim() === l2.trim()) {
                     class1 = class2 = '';
                 } else if (!l1.trim()) {
-                    class1 = 'diff-remove';
+                    class1 = 'diff-remove';  // missing in file1
                     class2 = 'diff-add';
+                    title1 = 'Line missing in File 1';
+                    title2 = 'Line added in File 2';
                 } else if (!l2.trim()) {
                     class1 = 'diff-add';
-                    class2 = 'diff-remove';
+                    class2 = 'diff-remove'; // missing in file2
+                    title1 = 'Line added in File 1';
+                    title2 = 'Line missing in File 2';
                 } else {
                     class1 = class2 = 'diff-change';
+                    title1 = title2 = 'Line changed';
+                    // Highlight differing words inside the line:
                     content1 = highlightWordDiffs(l1, l2);
                     content2 = highlightWordDiffs(l2, l1);
                 }
 
-                html1 += `<div class="${class1}">${content1}</div>`;
-                html2 += `<div class="${class2}">${content2}</div>`;
+                html1 += `<div class="${class1}" title="${title1}">${content1}</div>`;
+                html2 += `<div class="${class2}" title="${title2}">${content2}</div>`;
             });
 
             document.getElementById('output1').innerHTML = html1;
@@ -416,6 +439,7 @@
         output1.addEventListener('scroll', () => syncScroll(output1, output2));
         output2.addEventListener('scroll', () => syncScroll(output2, output1));
     </script>
+    <div id="tooltip" class="tooltip"></div>
 </body>
 
 </html>
