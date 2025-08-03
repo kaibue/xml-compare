@@ -1,0 +1,166 @@
+/* same styles as before */
+* {
+    box-sizing: border-box;
+}
+
+html,
+body {
+    overflow: hidden;
+}
+
+body {
+    margin: 0;
+    font-family: Arial, sans-serif;
+    background: #e5e7eb;
+    padding: 2rem;
+}
+
+.container {
+    max-width: 1900px;
+    margin: 0 auto;
+}
+
+.header {
+    text-align: center;
+    margin-bottom: 2rem;
+}
+
+.file-inputs {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 1rem;
+    justify-content: center;
+    margin-bottom: 2rem;
+}
+
+.custom-file {
+    position: relative;
+    display: inline-block;
+    width: 100%;
+    max-width: 400px;
+}
+
+.custom-file input[type="file"] {
+    display: none;
+}
+
+.custom-file-label {
+    display: inline-block;
+    width: 100%;
+    padding: 1rem 1.5rem;
+    font-size: 1rem;
+    border: 2px dashed #ccc;
+    border-radius: 8px;
+    background-color: white;
+    cursor: pointer;
+    text-align: center;
+    transition: all 0.3s ease;
+}
+
+.custom-file-label:hover {
+    background-color: #e6f7ff;
+    border-color: #1890ff;
+    color: #1890ff;
+}
+
+.output {
+    display: flex;
+    flex-wrap: nowrap;
+    gap: 1.2rem;
+    overflow-x: auto;
+    padding: 0 1rem;
+}
+
+.xml-display {
+    flex: 1 1 50%;
+    background: #f8f9fa;
+    color: #333;
+    padding: 1rem;
+    border-radius: 8px;
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.05);
+    overflow: auto;
+    max-height: 80vh;
+    white-space: pre;
+    font-family: Consolas, monospace;
+    font-size: 0.9rem;
+}
+
+#output1 {
+    padding-right: 0;
+    margin-right: 0;
+    overflow-y: auto;
+    overflow-x: auto;
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+}
+
+#output1::-webkit-scrollbar {
+    display: none;
+}
+
+/* New styles for line numbers and layout */
+.xml-display > div { /* Target the direct children of xml-display (the line wrappers) */
+    display: flex;
+    align-items: flex-start; /* Align items to the start of the cross axis (top) */
+}
+
+.line-number {
+    flex-shrink: 0; /* Prevent the line number from shrinking */
+    padding-right: 10px;
+    text-align: right;
+    color: #888;
+    user-select: none; /* Prevent text selection */
+    font-size: 0.8em; /* Slightly smaller font for line numbers */
+    position: sticky; /* Make line numbers stick during horizontal scroll */
+    left: 0;
+    background-color: #f8f9fa; /* Match background for sticky effect */
+    z-index: 1; /* Ensure line number is above content when scrolling */
+    padding-left: 5px; /* Small padding on the left */
+}
+
+/* Adjust padding for the content div so it aligns with the line number */
+.xml-display > div > div {
+    flex-grow: 1; /* Allow the content div to take up remaining space */
+    padding-left: 5px; /* Add some padding to separate from line number */
+    min-width: 0; /* Allow flex item to shrink below content size */
+}
+
+
+.diff-add {
+    background-color: #e6ffed;
+}
+
+.diff-remove {
+    background-color: #ffeef0;
+}
+
+.diff-change {
+    background-color: #fff5b1;
+}
+
+.diff-missing {
+    background-color: #cfe8ff;
+    /* Light blue */
+    color: #000;
+    font-weight: bold;
+    padding: 0 2px;
+    border-radius: 2px;
+}
+
+.diff-change-word {
+    background-color: #e2104f;
+    color: white;
+    font-weight: bold;
+    padding: 0 2px;
+    border-radius: 2px;
+}
+
+@media (max-width: 768px) {
+    .output {
+        flex-wrap: wrap;
+    }
+
+    .xml-display {
+        flex: 1 1 100%;
+    }
+}
