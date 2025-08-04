@@ -8,29 +8,72 @@
     <link rel="stylesheet" href="style.css" />
 </head>
 
+
 <body>
+    <div class="header">
+        <h1>XML File Comparison Tool</h1>
+    </div>
+
     <div class="container">
-        <div class="header">
-            <h1>XML Comparator</h1>
-            <p>Upload two XML files to compare them side by side.</p>
-        </div>
-        <div class="file-inputs">
-            <div class="custom-file">
-                <label class="custom-file-label" for="file1">Choose XML File 1</label>
-                <input type="file" id="file1" accept=".xml" />
+        <div class="upload-section">
+            <div class="file-inputs">
+                <div class="file-input-group">
+                    <label for="file1">Original XML File</label>
+                    <div class="file-input" id="file1-input">
+                        <input type="file" id="file1" accept=".xml" style="display: none;">
+                        <div id="file1-label">Click to select XML file or drag & drop</div>
+                    </div>
+                </div>
+                <div class="file-input-group">
+                    <label for="file2">Modified XML File</label>
+                    <div class="file-input" id="file2-input">
+                        <input type="file" id="file2" accept=".xml" style="display: none;">
+                        <div id="file2-label">Click to select XML file or drag & drop</div>
+                    </div>
+                </div>
             </div>
-            <div class="custom-file">
-                <label class="custom-file-label" for="file2">Choose XML File 2</label>
-                <input type="file" id="file2" accept=".xml" />
-            </div>
+            <button class="compare-btn" id="compare-btn" disabled>Compare Files</button>
         </div>
-        <div class="output">
-            <div class="xml-display" id="output1"></div>
-            <div class="xml-display" id="output2"></div>
+
+        <div class="diff-container" id="diff-container">
+            <div class="diff-header">
+                <h2>File Comparison Results</h2>
+                <div class="diff-stats" id="diff-stats"></div>
+            </div>
+            <div class="diff-view-toggle">
+                <button class="view-btn active" id="unified-btn">Unified View</button>
+                <button class="view-btn" id="split-btn">Split View</button>
+            </div>
+            <div class="diff-content unified-view" id="diff-content">
+                <div class="diff-pane" id="unified-pane">
+                    <div class="pane-header">
+                        <span id="unified-header">
+                            <span class="file-indicator file-indicator-a">FILE A</span>
+                            vs 
+                            <span class="file-indicator file-indicator-b">FILE B</span>
+                            Comparison
+                        </span>
+                        <span class="file-info" id="unified-info"></span>
+                    </div>
+                    <div class="code-container" id="unified-container"></div>
+                </div>
+                <div class="diff-pane" id="left-pane-container" style="display: none;">
+                    <div class="pane-header">
+                        <span><span class="file-indicator file-indicator-a">FILE A</span><span id="left-header">Original File</span></span>
+                        <span class="file-info" id="left-info"></span>
+                    </div>
+                    <div class="code-container" id="left-pane"></div>
+                </div>
+                <div class="diff-pane" id="right-pane-container" style="display: none;">
+                    <div class="pane-header">
+                        <span><span class="file-indicator file-indicator-b">FILE B</span><span id="right-header">Modified File</span></span>
+                        <span class="file-info" id="right-info"></span>
+                    </div>
+                    <div class="code-container" id="right-pane"></div>
+                </div>
+            </div>
         </div>
     </div>
-    <script src="main.js"></script>
-    <div id="tooltip" class="tooltip"></div>
+    <script src="app.js"></script>
 </body>
-
 </html>
