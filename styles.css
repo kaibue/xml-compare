@@ -1,166 +1,437 @@
-/* same styles as before */
 * {
+    margin: 0;
+    padding: 0;
     box-sizing: border-box;
 }
 
-html,
 body {
-    overflow: hidden;
-}
-
-body {
-    margin: 0;
-    font-family: Arial, sans-serif;
-    background: #e5e7eb;
-    padding: 2rem;
-}
-
-.container {
-    max-width: 1900px;
-    margin: 0 auto;
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    background: #f8f9fa;
+    color: #333;
 }
 
 .header {
-    text-align: center;
+    background: #24292e;
+    color: white;
+    padding: 1rem 2rem;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+.header h1 {
+    font-size: 1.5rem;
+    font-weight: 600;
+}
+
+.container {
+    max-width: 1400px;
+    margin: 0 auto;
+    padding: 2rem;
+}
+
+.upload-section {
+    background: white;
+    border-radius: 8px;
+    padding: 2rem;
     margin-bottom: 2rem;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
 }
 
 .file-inputs {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 2rem;
+    margin-bottom: 1.5rem;
+}
+
+.file-input-group {
     display: flex;
-    flex-wrap: wrap;
-    gap: 1rem;
-    justify-content: center;
-    margin-bottom: 2rem;
+    flex-direction: column;
 }
 
-.custom-file {
-    position: relative;
-    display: inline-block;
-    width: 100%;
-    max-width: 400px;
+.file-input-group label {
+    font-weight: 600;
+    margin-bottom: 0.5rem;
+    color: #586069;
 }
 
-.custom-file input[type="file"] {
+.file-input {
+    padding: 0.75rem;
+    border: 2px dashed #d1d5da;
+    border-radius: 6px;
+    background: #fafbfc;
+    cursor: pointer;
+    transition: all 0.2s;
+    text-align: center;
+}
+
+.file-input:hover {
+    border-color: #0366d6;
+    background: #f1f8ff;
+}
+
+.file-input.has-file {
+    border-color: #28a745;
+    background: #f0fff4;
+}
+
+.compare-btn {
+    background: #0366d6;
+    color: white;
+    border: none;
+    padding: 0.75rem 2rem;
+    border-radius: 6px;
+    font-size: 1rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.2s;
+}
+
+.compare-btn:hover:not(:disabled) {
+    background: #0256cc;
+}
+
+.compare-btn:disabled {
+    background: #6c757d;
+    cursor: not-allowed;
+}
+
+.diff-container {
+    background: white;
+    border-radius: 8px;
+    overflow: hidden;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
     display: none;
 }
 
-.custom-file-label {
-    display: inline-block;
-    width: 100%;
-    padding: 1rem 1.5rem;
-    font-size: 1rem;
-    border: 2px dashed #ccc;
-    border-radius: 8px;
-    background-color: white;
-    cursor: pointer;
-    text-align: center;
-    transition: all 0.3s ease;
-}
-
-.custom-file-label:hover {
-    background-color: #e6f7ff;
-    border-color: #1890ff;
-    color: #1890ff;
-}
-
-.output {
+.diff-header {
+    background: #f6f8fa;
+    border-bottom: 1px solid #e1e4e8;
+    padding: 1rem 2rem;
     display: flex;
-    flex-wrap: nowrap;
-    gap: 1.2rem;
-    overflow-x: auto;
-    padding: 0 1rem;
+    justify-content: space-between;
+    align-items: center;
 }
 
-.xml-display {
-    flex: 1 1 50%;
-    background: #f8f9fa;
-    color: #333;
-    padding: 1rem;
-    border-radius: 8px;
-    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.05);
-    overflow: auto;
-    max-height: 80vh;
-    white-space: pre;
-    font-family: Consolas, monospace;
+.diff-stats {
+    display: flex;
+    gap: 1rem;
     font-size: 0.9rem;
 }
 
-#output1 {
-    padding-right: 0;
-    margin-right: 0;
-    overflow-y: auto;
-    overflow-x: auto;
-    scrollbar-width: none;
-    -ms-overflow-style: none;
-}
-
-#output1::-webkit-scrollbar {
-    display: none;
-}
-
-/* New styles for line numbers and layout */
-.xml-display > div { /* Target the direct children of xml-display (the line wrappers) */
+.stat-item {
     display: flex;
-    align-items: flex-start; /* Align items to the start of the cross axis (top) */
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.stat-added {
+    color: #28a745;
+}
+
+.stat-removed {
+    color: #d73a49;
+}
+
+.stat-modified {
+    color: #f66a0a;
+}
+
+.diff-content {
+    min-height: 600px;
+}
+
+.diff-view-toggle {
+    display: flex;
+    gap: 0.5rem;
+    margin-bottom: 1rem;
+}
+
+.view-btn {
+    padding: 0.5rem 1rem;
+    border: 1px solid #d1d5da;
+    background: white;
+    cursor: pointer;
+    border-radius: 6px;
+    font-size: 0.875rem;
+    transition: all 0.2s;
+}
+
+.view-btn.active {
+    background: #0366d6;
+    color: white;
+    border-color: #0366d6;
+}
+
+.view-btn:hover:not(.active) {
+    background: #f6f8fa;
+}
+
+.split-view {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+}
+
+.unified-view {
+    display: block;
+}
+
+.diff-pane {
+    border-right: 1px solid #e1e4e8;
+    position: relative;
+}
+
+.diff-pane:last-child {
+    border-right: none;
+}
+
+.pane-header {
+    background: #f6f8fa;
+    padding: 0.75rem 1rem;
+    border-bottom: 1px solid #e1e4e8;
+    font-weight: 600;
+    color: #586069;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.file-info {
+    font-size: 0.8rem;
+    color: #6a737d;
+}
+
+.code-container {
+    font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+    font-size: 0.875rem;
+    line-height: 1.45;
+    overflow-x: auto;
+}
+
+.line {
+    display: flex;
+    min-height: 1.45em;
 }
 
 .line-number {
-    flex-shrink: 0; /* Prevent the line number from shrinking */
-    padding-right: 10px;
+    width: 50px;
+    padding: 0 0.5rem;
+    background: #f6f8fa;
+    border-right: 1px solid #e1e4e8;
     text-align: right;
-    color: #888;
-    user-select: none; /* Prevent text selection */
-    font-size: 0.8em; /* Slightly smaller font for line numbers */
-    position: sticky; /* Make line numbers stick during horizontal scroll */
-    left: 0;
-    background-color: #f8f9fa; /* Match background for sticky effect */
-    z-index: 1; /* Ensure line number is above content when scrolling */
-    padding-left: 5px; /* Small padding on the left */
+    color: #6a737d;
+    user-select: none;
+    flex-shrink: 0;
 }
 
-/* Adjust padding for the content div so it aligns with the line number */
-.xml-display > div > div {
-    flex-grow: 1; /* Allow the content div to take up remaining space */
-    padding-left: 5px; /* Add some padding to separate from line number */
-    min-width: 0; /* Allow flex item to shrink below content size */
+.line-content {
+    padding: 0 1rem;
+    flex: 1;
+    white-space: pre;
+    overflow-x: auto;
 }
 
-
-.diff-add {
-    background-color: #e6ffed;
+.line-added {
+    background: #e6ffed;
 }
 
-.diff-remove {
-    background-color: #ffeef0;
+.line-added .line-number {
+    background: #cdffd8;
 }
 
-.diff-change {
-    background-color: #fff5b1;
-}
-
-.diff-missing {
-    background-color: #cfe8ff;
-    /* Light blue */
-    color: #000;
+.line-added::before {
+    content: '+';
+    position: absolute;
+    left: 4px;
+    color: #28a745;
     font-weight: bold;
-    padding: 0 2px;
-    border-radius: 2px;
 }
 
-.diff-change-word {
-    background-color: #e2104f;
+.line-removed {
+    background: #ffeef0;
+}
+
+.line-removed .line-number {
+    background: #ffdce0;
+}
+
+.line-removed::before {
+    content: '-';
+    position: absolute;
+    left: 4px;
+    color: #d73a49;
+    font-weight: bold;
+}
+
+.line-modified {
+    background: #fff8c5;
+}
+
+.line-modified .line-number {
+    background: #ffeb3b;
+}
+
+.line-modified::before {
+    content: '~';
+    position: absolute;
+    left: 4px;
+    color: #f66a0a;
+    font-weight: bold;
+}
+
+.line-unchanged {
+    background: white;
+}
+
+.unified-line {
+    position: relative;
+    display: flex;
+    min-height: 1.45em;
+    padding-left: 16px;
+}
+
+.line-numbers {
+    width: 100px;
+    padding: 0;
+    background: #f6f8fa;
+    border-right: 1px solid #e1e4e8;
+    text-align: center;
+    color: #6a737d;
+    user-select: none;
+    flex-shrink: 0;
+    display: flex;
+    font-size: 0.8rem;
+}
+
+.line-num-left,
+.line-num-right {
+    width: 50%;
+    text-align: center;
+    padding: 0 0.25rem;
+    position: relative;
+}
+
+.line-num-left::before {
+    position: absolute;
+    top: -1px;
+    left: 2px;
+    font-size: 0.7rem;
+    font-weight: bold;
+    color: #0366d6;
+}
+
+.line-num-right::before {
+    position: absolute;
+    top: -1px;
+    right: 2px;
+    font-size: 0.7rem;
+    font-weight: bold;
+    color: #28a745;
+}
+
+.line-num-right {
+    border-left: 2px solid #e1e4e8;
+}
+
+.file-indicator {
+    display: inline-block;
+    padding: 0.2rem 0.5rem;
+    border-radius: 3px;
+    font-size: 0.75rem;
+    font-weight: bold;
+    margin-right: 0.5rem;
+}
+
+.file-indicator-a {
+    background: #0366d6;
     color: white;
-    font-weight: bold;
-    padding: 0 2px;
-    border-radius: 2px;
+}
+
+.file-indicator-b {
+    background: #28a745;
+    color: white;
+}
+
+.line-context {
+    padding-left: 24px;
+    position: relative;
+}
+
+.char-added {
+    background: #acf2bd;
+    color: #22863a;
+}
+
+.char-removed {
+    background: #fdb8c0;
+    color: #b31d28;
+}
+
+.xml-tag {
+    color: #005cc5;
+}
+
+.xml-attr-name {
+    color: #6f42c1;
+}
+
+.xml-attr-value {
+    color: #032f62;
+}
+
+.xml-text {
+    color: #24292e;
+}
+
+.xml-comment {
+    color: #6a737d;
+    font-style: italic;
+}
+
+.no-results {
+    text-align: center;
+    padding: 3rem;
+    color: #586069;
+}
+
+.loading {
+    text-align: center;
+    padding: 2rem;
+    color: #586069;
+}
+
+.error {
+    background: #f8d7da;
+    color: #721c24;
+    padding: 1rem;
+    border: 1px solid #f5c6cb;
+    border-radius: 4px;
+    margin: 1rem 0;
 }
 
 @media (max-width: 768px) {
-    .output {
-        flex-wrap: wrap;
+    .file-inputs {
+        grid-template-columns: 1fr;
     }
 
-    .xml-display {
-        flex: 1 1 100%;
+    .diff-content {
+        grid-template-columns: 1fr;
+    }
+
+    .diff-pane {
+        border-right: none;
+        border-bottom: 1px solid #e1e4e8;
+    }
+
+    .diff-pane:last-child {
+        border-bottom: none;
+    }
+
+    .split-view {
+        grid-template-columns: 1fr;
+    }
+
+    .diff-pane {
+        border-right: none;
+        border-bottom: 1px solid #e1e4e8;
     }
 }
