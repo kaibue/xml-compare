@@ -1,441 +1,486 @@
+' S1000D XML File Comparison System for MS Access
+' This module provides functionality to compare S1000D XML files and record differences
+
+Option Compare Database
 Option Explicit
 
-' Structure to hold difference information
-Public Type XMLDifference
-    DifferenceType As String
-    XPath1 As String
-    XPath2 As String
-    Value1 As String
-    Value2 As String
-    Description As String
-    ElementType As String
-End Type
+' First, create the comparison results table (run this once)
+Sub CreateComparisonTable()
+    Dim db As DAO.Database
+    Dim tdf As DAO.TableDef
+    
+    Set db = CurrentDb()
+    
+    ' Delete table if it exists
+    On Error Resume Next
+    db.TableDefs.Delete "allDifferences"
+    On Error GoTo 0
+    
+    ' Create new table
+    Set tdf = db.CreateTableDef("allDifferences")
+    
+    With tdf
+        .Fields.Append .CreateField("ID", dbLong)
+        .Fields("ID").Attributes = dbAutoIncrField
+        .Fields.Append .CreateField("ComparisonDate", dbDate)
+        .Fields.Append .CreateField("FileName", dbText, 255)
+        .Fields.Append .CreateField("Folder1Path", dbText, 255)
+        .Fields.Append .CreateField("Folder2Path", dbText, 255)
+        .Fields.Append .CreateField("ChangeType", dbText, 50) ' Added, Deleted, Modified, Moved
+        .Fields.Append .CreateField("ElementPath", dbText, 500) ' XPath to the element
+        .Fields.Append .CreateField("ElementName", dbText, 100)
+        .Fields.Append .CreateField("AttributeName", dbText, 100)
+        .Fields.Append .CreateField("OldValue", dbMemo)
+        .Fields.Append .CreateField("NewValue", dbMemo)
+        .Fields.Append .CreateField("S1000DSection", dbText, 100) ' e.g., dmodule, pmEntry, etc.
+        .Fields.Append .CreateField("DataModuleCode", dbText, 50) ' DMC if applicable
+        .Fields.Append .CreateField("IssueInfo", dbText, 50)
+        .Fields.Append .CreateField("SecurityClass", dbText, 20)
+        
+        ' Create primary key
+        .Fields.Append .CreateField("PrimaryKey", dbLong)
+        .Fields("PrimaryKey").Attributes = dbAutoIncrField
+        
+        Dim idx As DAO.Index
+        Set idx = .CreateIndex("PrimaryKey")
+        idx.Fields = "PrimaryKey"
+        idx.Primary = True
+        .Indexes.Append idx
+    End With
+    
+    db.TableDefs.Append tdf
+    
+    MsgBox "allDifferences table created successfully!"
+End Sub
 
-' Main function to compare two S1000D XML objects
-Public Function CompareS1000DXML(xml1 As MSXML2.DOMDocument60, xml2 As MSXML2.DOMDocument60, _
-                                Optional outputTable As String = "XMLDifferences") As Long
+' Main comparison function
+Public Sub CompareS1000DFiles(folder1Path As String, folder2Path As String, Optional filePattern As String = "*.xml")
+    Dim fso As Object
+    Dim folder1 As Object
+    Dim file As Object
+    Dim file1Path As String, file2Path As String
+    Dim fileName As String
     
-    Dim differences() As XMLDifference
-    Dim diffCount As Long
-    diffCount = 0
+    Set fso = CreateObject("Scripting.FileSystemObject")
     
-    ' Validate input XML documents
-    If xml1 Is Nothing Or xml2 Is Nothing Then
-        MsgBox "One or both XML objects are Nothing", vbCritical
-        Exit Function
+    If Not fso.FolderExists(folder1Path) Or Not fso.FolderExists(folder2Path) Then
+        MsgBox "One or both folder paths do not exist!"
+        Exit Sub
     End If
     
-    If xml1.documentElement Is Nothing Or xml2.documentElement Is Nothing Then
-        MsgBox "One or both XML documents have no root element", vbCritical
-        Exit Function
-    End If
+    Set folder1 = fso.GetFolder(folder1Path)
     
-    ' Start comparison from root elements
-    CompareNodes xml1.documentElement, xml2.documentElement, "", differences, diffCount
+    ' Loop through all XML files in folder1
+    For Each file In folder1.Files
+        If file.Name Like filePattern Then
+            fileName = file.Name
+            file1Path = folder1Path & "\" & fileName
+            file2Path = folder2Path & "\" & fileName
+            
+            If fso.FileExists(file2Path) Then
+                ' Compare the two files
+                Call CompareS1000DFile(file1Path, file2Path, fileName)
+            Else
+                ' File only exists in folder1
+                Call RecordFileDifference(fileName, folder1Path, folder2Path, "FileOnlyInFolder1", "", "", "", "", "", "")
+            End If
+        End If
+    Next file
     
-    ' Create output table with results
-    If diffCount > 0 Then
-        CreateDifferenceTable differences, diffCount, outputTable
-    Else
-        MsgBox "No differences found between the XML documents", vbInformation
-    End If
+    ' Check for files that only exist in folder2
+    Dim folder2 As Object
+    Set folder2 = fso.GetFolder(folder2Path)
     
-    CompareS1000DXML = diffCount
-End Function
+    For Each file In folder2.Files
+        If file.Name Like filePattern Then
+            fileName = file.Name
+            file1Path = folder1Path & "\" & fileName
+            
+            If Not fso.FileExists(file1Path) Then
+                Call RecordFileDifference(fileName, folder1Path, folder2Path, "FileOnlyInFolder2", "", "", "", "", "", "")
+            End If
+        End If
+    Next file
+    
+    MsgBox "S1000D file comparison completed! Check the allDifferences table for results."
+End Sub
 
-' Recursive function to compare XML nodes deeply
-Private Sub CompareNodes(node1 As MSXML2.IXMLDOMNode, node2 As MSXML2.IXMLDOMNode, _
-                        currentPath As String, ByRef differences() As XMLDifference, _
-                        ByRef diffCount As Long)
+' Compare individual S1000D XML files
+Private Sub CompareS1000DFile(file1Path As String, file2Path As String, fileName As String)
+    Dim xml1 As Object, xml2 As Object
+    Dim doc1 As Object, doc2 As Object
     
-    Dim xpath As String
-    Dim i As Long, j As Long
+    Set xml1 = CreateObject("MSXML2.DOMDocument.6.0")
+    Set xml2 = CreateObject("MSXML2.DOMDocument.6.0")
+    
+    xml1.async = False
+    xml2.async = False
+    xml1.validateOnParse = False
+    xml2.validateOnParse = False
+    
+    If Not xml1.Load(file1Path) Then
+        MsgBox "Error loading " & file1Path & ": " & xml1.parseError.reason
+        Exit Sub
+    End If
+    
+    If Not xml2.Load(file2Path) Then
+        MsgBox "Error loading " & file2Path & ": " & xml2.parseError.reason
+        Exit Sub
+    End If
+    
+    ' Extract S1000D metadata
+    Dim dmc1 As String, dmc2 As String
+    Dim issue1 As String, issue2 As String
+    Dim security1 As String, security2 As String
+    
+    dmc1 = ExtractDataModuleCode(xml1)
+    dmc2 = ExtractDataModuleCode(xml2)
+    issue1 = ExtractIssueInfo(xml1)
+    issue2 = ExtractIssueInfo(xml2)
+    security1 = ExtractSecurityClass(xml1)
+    security2 = ExtractSecurityClass(xml2)
+    
+    ' Compare root elements
+    Call CompareNodes(xml1.documentElement, xml2.documentElement, "", fileName, _
+                      Left(file1Path, InStrRev(file1Path, "\")), _
+                      Left(file2Path, InStrRev(file2Path, "\")), _
+                      dmc1, issue1, security1)
+End Sub
+
+' Recursive function to compare XML nodes
+Private Sub CompareNodes(node1 As Object, node2 As Object, currentPath As String, _
+                        fileName As String, folder1 As String, folder2 As String, _
+                        dmc As String, issueInfo As String, securityClass As String)
+    
+    Dim newPath As String
+    Dim i As Integer, j As Integer
     Dim found As Boolean
-    Dim attr1 As MSXML2.IXMLDOMAttribute
-    Dim attr2 As MSXML2.IXMLDOMAttribute
+    Dim s1000dSection As String
     
-    ' Build XPath for current node
     If node1 Is Nothing And node2 Is Nothing Then Exit Sub
     
+    ' Build XPath
+    If currentPath = "" Then
+        newPath = "/" & node1.nodeName
+    Else
+        newPath = currentPath & "/" & node1.nodeName
+    End If
+    
+    ' Determine S1000D section
+    s1000dSection = GetS1000DSection(node1.nodeName)
+    
+    ' Compare node existence
     If node1 Is Nothing Then
-        xpath = currentPath & "/" & node2.nodeName
-        AddDifference differences, diffCount, "MISSING_NODE", "", xpath, "", GetNodeValue(node2), _
-                     "Node exists in XML2 but missing in XML1", GetS1000DElementType(node2.nodeName)
+        Call RecordFileDifference(fileName, folder1, folder2, "Added", newPath, _
+                                node2.nodeName, "", "", GetNodeValue(node2), s1000dSection, dmc, issueInfo, securityClass)
         Exit Sub
     End If
     
     If node2 Is Nothing Then
-        xpath = currentPath & "/" & node1.nodeName
-        AddDifference differences, diffCount, "EXTRA_NODE", xpath, "", GetNodeValue(node1), "", _
-                     "Node exists in XML1 but missing in XML2", GetS1000DElementType(node1.nodeName)
+        Call RecordFileDifference(fileName, folder1, folder2, "Deleted", newPath, _
+                                node1.nodeName, "", GetNodeValue(node1), "", s1000dSection, dmc, issueInfo, securityClass)
         Exit Sub
     End If
-    
-    xpath = currentPath & "/" & node1.nodeName
     
     ' Compare node names
     If node1.nodeName <> node2.nodeName Then
-        AddDifference differences, diffCount, "NODE_NAME", xpath, currentPath & "/" & node2.nodeName, _
-                     node1.nodeName, node2.nodeName, "Different node names at same position", _
-                     GetS1000DElementType(node1.nodeName)
-    End If
-    
-    ' Compare node values (text content)
-    Dim value1 As String, value2 As String
-    value1 = GetNodeValue(node1)
-    value2 = GetNodeValue(node2)
-    
-    If Trim(value1) <> Trim(value2) Then
-        If Len(Trim(value1)) > 0 Or Len(Trim(value2)) > 0 Then
-            AddDifference differences, diffCount, "NODE_VALUE", xpath, xpath, value1, value2, _
-                         "Different text content in " & GetS1000DDescription(node1.nodeName), _
-                         GetS1000DElementType(node1.nodeName)
-        End If
+        Call RecordFileDifference(fileName, folder1, folder2, "Modified", newPath, _
+                                "NodeName", "", node1.nodeName, node2.nodeName, s1000dSection, dmc, issueInfo, securityClass)
     End If
     
     ' Compare attributes
-    CompareAttributes node1, node2, xpath, differences, diffCount
+    Call CompareAttributes(node1, node2, newPath, fileName, folder1, folder2, s1000dSection, dmc, issueInfo, securityClass)
     
-    ' Compare child nodes
-    CompareChildNodes node1, node2, xpath, differences, diffCount
-End Sub
-
-' Compare attributes of two nodes
-Private Sub CompareAttributes(node1 As MSXML2.IXMLDOMNode, node2 As MSXML2.IXMLDOMNode, _
-                             xpath As String, ByRef differences() As XMLDifference, _
-                             ByRef diffCount As Long)
-    
-    Dim attr1 As MSXML2.IXMLDOMAttribute
-    Dim attr2 As MSXML2.IXMLDOMAttribute
-    Dim i As Long, found As Boolean
-    
-    ' Check attributes in node1
-    If Not node1.Attributes Is Nothing Then
-        For i = 0 To node1.Attributes.length - 1
-            Set attr1 = node1.Attributes.Item(i)
-            Set attr2 = node2.Attributes.getNamedItem(attr1.Name)
-            
-            If attr2 Is Nothing Then
-                AddDifference differences, diffCount, "MISSING_ATTRIBUTE", _
-                             xpath & "/@" & attr1.Name, "", attr1.Value, "", _
-                             "Attribute '" & attr1.Name & "' missing in XML2", _
-                             GetS1000DElementType(node1.nodeName)
-            ElseIf attr1.Value <> attr2.Value Then
-                AddDifference differences, diffCount, "ATTRIBUTE_VALUE", _
-                             xpath & "/@" & attr1.Name, xpath & "/@" & attr2.Name, _
-                             attr1.Value, attr2.Value, _
-                             "Different value for attribute '" & attr1.Name & "' in " & GetS1000DDescription(node1.nodeName), _
-                             GetS1000DElementType(node1.nodeName)
-            End If
-        Next i
-    End If
-    
-    ' Check for extra attributes in node2
-    If Not node2.Attributes Is Nothing Then
-        For i = 0 To node2.Attributes.length - 1
-            Set attr2 = node2.Attributes.Item(i)
-            If node1.Attributes Is Nothing Then
-                Set attr1 = Nothing
-            Else
-                Set attr1 = node1.Attributes.getNamedItem(attr2.Name)
-            End If
-            
-            If attr1 Is Nothing Then
-                AddDifference differences, diffCount, "EXTRA_ATTRIBUTE", _
-                             "", xpath & "/@" & attr2.Name, "", attr2.Value, _
-                             "Attribute '" & attr2.Name & "' exists in XML2 but not in XML1", _
-                             GetS1000DElementType(node2.nodeName)
-            End If
-        Next i
-    End If
-End Sub
-
-' Compare child nodes of two parent nodes
-Private Sub CompareChildNodes(parent1 As MSXML2.IXMLDOMNode, parent2 As MSXML2.IXMLDOMNode, _
-                             currentPath As String, ByRef differences() As XMLDifference, _
-                             ByRef diffCount As Long)
-    
-    Dim child1 As MSXML2.IXMLDOMNode
-    Dim child2 As MSXML2.IXMLDOMNode
-    Dim children1 As MSXML2.IXMLDOMNodeList
-    Dim children2 As MSXML2.IXMLDOMNodeList
-    Dim i As Long, j As Long
-    Dim found As Boolean
-    Dim matchedNodes2() As Boolean
-    
-    Set children1 = parent1.childNodes
-    Set children2 = parent2.childNodes
-    
-    If children2.length > 0 Then
-        ReDim matchedNodes2(children2.length - 1)
-    End If
-    
-    ' Compare each child in parent1 with children in parent2
-    For i = 0 To children1.length - 1
-        Set child1 = children1.Item(i)
-        
-        ' Skip text nodes that are just whitespace
-        If child1.nodeType = NODE_TEXT And Trim(child1.nodeValue) = "" Then
-            GoTo NextChild1
+    ' Compare text content (for leaf nodes)
+    If node1.childNodes.Length = 0 And node2.childNodes.Length = 0 Then
+        If Trim(node1.Text) <> Trim(node2.Text) Then
+            Call RecordFileDifference(fileName, folder1, folder2, "Modified", newPath, _
+                                    node1.nodeName, "TextContent", node1.Text, node2.Text, s1000dSection, dmc, issueInfo, securityClass)
         End If
+    Else
+        ' Compare child nodes
+        Dim childMap1 As Object, childMap2 As Object
+        Set childMap1 = CreateObject("Scripting.Dictionary")
+        Set childMap2 = CreateObject("Scripting.Dictionary")
         
-        found = False
-        
-        ' Try to find matching node in parent2
-        For j = 0 To children2.length - 1
-            Set child2 = children2.Item(j)
-            
-            ' Skip already matched nodes and whitespace text nodes
-            If UBound(matchedNodes2) >= j Then
-                If matchedNodes2(j) Then GoTo NextChild2
-            End If
-            
-            If child2.nodeType = NODE_TEXT And Trim(child2.nodeValue) = "" Then
-                GoTo NextChild2
-            End If
-            
-            ' Check if nodes match (same name and key attributes for S1000D)
-            If NodesMatch(child1, child2) Then
-                found = True
-                If UBound(matchedNodes2) >= j Then matchedNodes2(j) = True
-                CompareNodes child1, child2, currentPath, differences, diffCount
-                Exit For
-            End If
-            
-NextChild2:
-        Next j
-        
-        ' If no match found, it's a missing node in XML2
-        If Not found Then
-            CompareNodes child1, Nothing, currentPath, differences, diffCount
-        End If
-        
-NextChild1:
-    Next i
-    
-    ' Check for extra nodes in parent2
-    For j = 0 To children2.length - 1
-        If UBound(matchedNodes2) >= j Then
-            If Not matchedNodes2(j) Then
-                Set child2 = children2.Item(j)
-                If Not (child2.nodeType = NODE_TEXT And Trim(child2.nodeValue) = "") Then
-                    CompareNodes Nothing, child2, currentPath, differences, diffCount
+        ' Build maps of child nodes
+        For i = 0 To node1.childNodes.Length - 1
+            If node1.childNodes(i).nodeType = 1 Then ' Element node
+                Dim key1 As String
+                key1 = GetNodeKey(node1.childNodes(i))
+                If Not childMap1.exists(key1) Then
+                    Set childMap1(key1) = CreateObject("Scripting.Dictionary")
                 End If
+                childMap1(key1)(childMap1(key1).Count) = node1.childNodes(i)
             End If
-        End If
-    Next j
+        Next
+        
+        For i = 0 To node2.childNodes.Length - 1
+            If node2.childNodes(i).nodeType = 1 Then ' Element node
+                Dim key2 As String
+                key2 = GetNodeKey(node2.childNodes(i))
+                If Not childMap2.exists(key2) Then
+                    Set childMap2(key2) = CreateObject("Scripting.Dictionary")
+                End If
+                childMap2(key2)(childMap2(key2).Count) = node2.childNodes(i)
+            End If
+        Next
+        
+        ' Compare child nodes
+        Dim key As Variant
+        For Each key In childMap1.Keys
+            If childMap2.exists(key) Then
+                ' Compare matching children
+                Dim maxCount As Integer
+                maxCount = Application.Max(childMap1(key).Count, childMap2(key).Count)
+                For i = 0 To maxCount - 1
+                    Dim child1 As Object, child2 As Object
+                    Set child1 = Nothing
+                    Set child2 = Nothing
+                    
+                    If i < childMap1(key).Count Then Set child1 = childMap1(key)(i)
+                    If i < childMap2(key).Count Then Set child2 = childMap2(key)(i)
+                    
+                    Call CompareNodes(child1, child2, newPath, fileName, folder1, folder2, dmc, issueInfo, securityClass)
+                Next
+            Else
+                ' Child only exists in node1
+                For i = 0 To childMap1(key).Count - 1
+                    Call CompareNodes(childMap1(key)(i), Nothing, newPath, fileName, folder1, folder2, dmc, issueInfo, securityClass)
+                Next
+            End If
+        Next
+        
+        ' Check for children that only exist in node2
+        For Each key In childMap2.Keys
+            If Not childMap1.exists(key) Then
+                For i = 0 To childMap2(key).Count - 1
+                    Call CompareNodes(Nothing, childMap2(key)(i), newPath, fileName, folder1, folder2, dmc, issueInfo, securityClass)
+                Next
+            End If
+        Next
+    End If
 End Sub
 
-' Check if two nodes match based on S1000D logic
-Private Function NodesMatch(node1 As MSXML2.IXMLDOMNode, node2 As MSXML2.IXMLDOMNode) As Boolean
-    NodesMatch = False
+' Compare attributes between two nodes
+Private Sub CompareAttributes(node1 As Object, node2 As Object, elementPath As String, _
+                             fileName As String, folder1 As String, folder2 As String, _
+                             s1000dSection As String, dmc As String, issueInfo As String, securityClass As String)
     
-    If node1.nodeName <> node2.nodeName Then Exit Function
+    Dim attr1 As Object, attr2 As Object
+    Dim attrMap1 As Object, attrMap2 As Object
+    Dim i As Integer
     
-    ' For S1000D, check key identifying attributes
-    Dim keyAttrs As Variant
-    keyAttrs = Array("id", "infoCode", "dmCode", "pmCode", "applicRefId", "reasonForUpdateRefId")
+    Set attrMap1 = CreateObject("Scripting.Dictionary")
+    Set attrMap2 = CreateObject("Scripting.Dictionary")
     
-    Dim attr As Variant
-    For Each attr In keyAttrs
-        Dim val1 As String, val2 As String
-        val1 = GetAttributeValue(node1, CStr(attr))
-        val2 = GetAttributeValue(node2, CStr(attr))
-        
-        If val1 <> "" Or val2 <> "" Then
-            If val1 <> val2 Then Exit Function
+    ' Build attribute maps
+    If Not node1.Attributes Is Nothing Then
+        For i = 0 To node1.Attributes.Length - 1
+            Set attr1 = node1.Attributes(i)
+            attrMap1(attr1.Name) = attr1.Value
+        Next
+    End If
+    
+    If Not node2.Attributes Is Nothing Then
+        For i = 0 To node2.Attributes.Length - 1
+            Set attr2 = node2.Attributes(i)
+            attrMap2(attr2.Name) = attr2.Value
+        Next
+    End If
+    
+    ' Compare attributes
+    Dim attrName As Variant
+    For Each attrName In attrMap1.Keys
+        If attrMap2.exists(attrName) Then
+            If attrMap1(attrName) <> attrMap2(attrName) Then
+                Call RecordFileDifference(fileName, folder1, folder2, "Modified", elementPath, _
+                                        node1.nodeName, CStr(attrName), attrMap1(attrName), attrMap2(attrName), _
+                                        s1000dSection, dmc, issueInfo, securityClass)
+            End If
+        Else
+            Call RecordFileDifference(fileName, folder1, folder2, "Deleted", elementPath, _
+                                    node1.nodeName, CStr(attrName), attrMap1(attrName), "", _
+                                    s1000dSection, dmc, issueInfo, securityClass)
         End If
-    Next attr
+    Next
     
-    NodesMatch = True
-End Function
+    ' Check for new attributes in node2
+    For Each attrName In attrMap2.Keys
+        If Not attrMap1.exists(attrName) Then
+            Call RecordFileDifference(fileName, folder1, folder2, "Added", elementPath, _
+                                    node2.nodeName, CStr(attrName), "", attrMap2(attrName), _
+                                    s1000dSection, dmc, issueInfo, securityClass)
+        End If
+    Next
+End Sub
 
-' Get attribute value safely
-Private Function GetAttributeValue(node As MSXML2.IXMLDOMNode, attrName As String) As String
-    GetAttributeValue = ""
-    If Not node.Attributes Is Nothing Then
-        Dim attr As MSXML2.IXMLDOMAttribute
-        Set attr = node.Attributes.getNamedItem(attrName)
-        If Not attr Is Nothing Then GetAttributeValue = attr.Value
+' Record a difference in the database
+Private Sub RecordFileDifference(fileName As String, folder1 As String, folder2 As String, _
+                                changeType As String, elementPath As String, elementName As String, _
+                                attributeName As String, oldValue As String, newValue As String, _
+                                s1000dSection As String, Optional dmc As String = "", _
+                                Optional issueInfo As String = "", Optional securityClass As String = "")
+    
+    Dim db As DAO.Database
+    Dim rs As DAO.Recordset
+    
+    Set db = CurrentDb()
+    Set rs = db.OpenRecordset("allDifferences")
+    
+    rs.AddNew
+    rs!ComparisonDate = Now()
+    rs!fileName = fileName
+    rs!Folder1Path = folder1
+    rs!Folder2Path = folder2
+    rs!ChangeType = changeType
+    rs!ElementPath = elementPath
+    rs!ElementName = elementName
+    rs!AttributeName = attributeName
+    rs!OldValue = Left(oldValue, 65000) ' Memo field limit
+    rs!NewValue = Left(newValue, 65000)
+    rs!S1000DSection = s1000dSection
+    rs!DataModuleCode = dmc
+    rs!IssueInfo = issueInfo
+    rs!SecurityClass = securityClass
+    rs.Update
+    
+    rs.Close
+End Sub
+
+' Helper functions for S1000D specific parsing
+
+Private Function ExtractDataModuleCode(xmlDoc As Object) As String
+    Dim node As Object
+    Set node = xmlDoc.SelectSingleNode("//dmIdent/dmCode")
+    If Not node Is Nothing Then
+        ExtractDataModuleCode = GetDMCString(node)
+    Else
+        ExtractDataModuleCode = ""
     End If
 End Function
 
-' Get meaningful text content from a node
-Private Function GetNodeValue(node As MSXML2.IXMLDOMNode) As String
-    If node Is Nothing Then
-        GetNodeValue = ""
+Private Function ExtractIssueInfo(xmlDoc As Object) As String
+    Dim node As Object
+    Set node = xmlDoc.SelectSingleNode("//dmIdent/issueInfo")
+    If Not node Is Nothing Then
+        ExtractIssueInfo = node.getAttribute("issueNumber") & "-" & node.getAttribute("inWork")
+    Else
+        ExtractIssueInfo = ""
+    End If
+End Function
+
+Private Function ExtractSecurityClass(xmlDoc As Object) As String
+    Dim node As Object
+    Set node = xmlDoc.SelectSingleNode("//dmStatus/security")
+    If Not node Is Nothing Then
+        ExtractSecurityClass = node.getAttribute("securityClassification")
+    Else
+        ExtractSecurityClass = ""
+    End If
+End Function
+
+Private Function GetDMCString(dmCodeNode As Object) As String
+    If dmCodeNode Is Nothing Then
+        GetDMCString = ""
         Exit Function
     End If
     
-    ' For elements with only text content
-    If node.childNodes.length = 1 And node.firstChild.nodeType = NODE_TEXT Then
-        GetNodeValue = node.firstChild.nodeValue
-    ElseIf node.childNodes.length = 0 And node.nodeType = NODE_TEXT Then
-        GetNodeValue = node.nodeValue
-    Else
-        GetNodeValue = ""
-    End If
+    GetDMCString = dmCodeNode.getAttribute("modelIdentCode") & "-" & _
+                   dmCodeNode.getAttribute("systemDiffCode") & "-" & _
+                   dmCodeNode.getAttribute("systemCode") & "-" & _
+                   dmCodeNode.getAttribute("subSystemCode") & _
+                   dmCodeNode.getAttribute("subSubSystemCode") & "-" & _
+                   dmCodeNode.getAttribute("assyCode") & "-" & _
+                   dmCodeNode.getAttribute("disassyCode") & _
+                   dmCodeNode.getAttribute("disassyCodeVariant") & "-" & _
+                   dmCodeNode.getAttribute("infoCode") & _
+                   dmCodeNode.getAttribute("infoCodeVariant") & "-" & _
+                   dmCodeNode.getAttribute("itemLocationCode") & _
+                   dmCodeNode.getAttribute("learnCode") & _
+                   dmCodeNode.getAttribute("learnEventCode")
 End Function
 
-' Add a difference to the collection
-Private Sub AddDifference(ByRef differences() As XMLDifference, ByRef diffCount As Long, _
-                         diffType As String, xpath1 As String, xpath2 As String, _
-                         value1 As String, value2 As String, description As String, _
-                         elementType As String)
-    
-    diffCount = diffCount + 1
-    ReDim Preserve differences(diffCount - 1)
-    
-    With differences(diffCount - 1)
-        .DifferenceType = diffType
-        .XPath1 = xpath1
-        .XPath2 = xpath2
-        .Value1 = Left(value1, 255) ' Truncate for table display
-        .Value2 = Left(value2, 255)
-        .Description = description
-        .ElementType = elementType
-    End With
-End Sub
-
-' Get S1000D-specific element description
-Private Function GetS1000DDescription(nodeName As String) As String
-    Select Case UCase(nodeName)
-        Case "DMODULE": GetS1000DDescription = "Data Module"
-        Case "IDENTANDSTATUSECTION": GetS1000DDescription = "Identification and Status Section"
-        Case "DMADDRES": GetS1000DDescription = "Data Module Address"
-        Case "DMSTATUS": GetS1000DDescription = "Data Module Status"
-        Case "CONTENT": GetS1000DDescription = "Content Section"
-        Case "DMDESCR": GetS1000DDescription = "Data Module Description"
-        Case "DMTITLE": GetS1000DDescription = "Data Module Title"
-        Case "TECHNAME": GetS1000DDescription = "Technical Name"
-        Case "INFONAME": GetS1000DDescription = "Information Name"
-        Case "PROCEDURALREQUIREMENTSSECTION": GetS1000DDescription = "Procedural Requirements Section"
-        Case "MAINFUNCTSECTION": GetS1000DDescription = "Main Function Section"
-        Case "LEVELLEDPARA": GetS1000DDescription = "Levelled Paragraph"
-        Case "TITLE": GetS1000DDescription = "Title"
-        Case "PARA": GetS1000DDescription = "Paragraph"
-        Case "STEP1": GetS1000DDescription = "Step 1"
-        Case "STEP2": GetS1000DDescription = "Step 2"
-        Case "STEP3": GetS1000DDescription = "Step 3"
-        Case "WARNING": GetS1000DDescription = "Warning"
-        Case "CAUTION": GetS1000DDescription = "Caution"
-        Case "NOTE": GetS1000DDescription = "Note"
-        Case "TABLE": GetS1000DDescription = "Table"
-        Case "GRAPHIC": GetS1000DDescription = "Graphic"
-        Case "HOTSPOT": GetS1000DDescription = "Hotspot"
-        Case "APPLICABILITY": GetS1000DDescription = "Applicability"
-        Case "APPLIC": GetS1000DDescription = "Applicability Reference"
-        Case Else: GetS1000DDescription = "Element (" & nodeName & ")"
+Private Function GetS1000DSection(nodeName As String) As String
+    Select Case LCase(nodeName)
+        Case "dmodule"
+            GetS1000DSection = "Data Module"
+        Case "pmentry"
+            GetS1000DSection = "Publication Module"
+        Case "dmlentry"
+            GetS1000DSection = "Data Management List"
+        Case "scormcontentpackage"
+            GetS1000DSection = "SCORM Content Package"
+        Case "identandstatusection"
+            GetS1000DSection = "Identification and Status"
+        Case "content"
+            GetS1000DSection = "Content"
+        Case "procedure"
+            GetS1000DSection = "Procedure"
+        Case "description"
+            GetS1000DSection = "Description"
+        Case "fault"
+            GetS1000DSection = "Fault"
+        Case "crew"
+            GetS1000DSection = "Crew"
+        Case "frontmatter"
+            GetS1000DSection = "Front Matter"
+        Case Else
+            GetS1000DSection = "Other"
     End Select
 End Function
 
-' Get S1000D element type for categorization
-Private Function GetS1000DElementType(nodeName As String) As String
-    Select Case UCase(nodeName)
-        Case "DMODULE", "PMODULE": GetS1000DElementType = "Module"
-        Case "IDENTANDSTATUSECTION", "DMADDRES", "DMSTATUS": GetS1000DElementType = "Identification"
-        Case "CONTENT", "PROCEDURALREQUIREMENTSSECTION", "MAINFUNCTSECTION": GetS1000DElementType = "Content Structure"
-        Case "LEVELLEDPARA", "PARA", "STEP1", "STEP2", "STEP3": GetS1000DElementType = "Text Content"
-        Case "WARNING", "CAUTION", "NOTE": GetS1000DElementType = "Advisory"
-        Case "TABLE", "GRAPHIC", "HOTSPOT": GetS1000DElementType = "Media"
-        Case "APPLICABILITY", "APPLIC": GetS1000DElementType = "Applicability"
-        Case "TITLE", "DMTITLE", "TECHNAME", "INFONAME": GetS1000DElementType = "Title"
-        Case Else: GetS1000DElementType = "Other"
+Private Function GetNodeKey(node As Object) As String
+    ' Create a unique key for the node based on S1000D conventions
+    Dim key As String
+    key = node.nodeName
+    
+    ' Add important identifying attributes for S1000D elements
+    Select Case LCase(node.nodeName)
+        Case "dmref", "pmref"
+            If Not node.SelectSingleNode("dmRefIdent/dmCode") Is Nothing Then
+                key = key & "_" & GetDMCString(node.SelectSingleNode("dmRefIdent/dmCode"))
+            End If
+        Case "step"
+            If node.hasAttribute("id") Then
+                key = key & "_" & node.getAttribute("id")
+            End If
+        Case "para"
+            If node.hasAttribute("id") Then
+                key = key & "_" & node.getAttribute("id")
+            End If
+        Case "figure", "table"
+            If node.hasAttribute("id") Then
+                key = key & "_" & node.getAttribute("id")
+            End If
     End Select
+    
+    GetNodeKey = key
 End Function
 
-' Create Excel table with differences
-Private Sub CreateDifferenceTable(differences() As XMLDifference, diffCount As Long, tableName As String)
-    Dim ws As Worksheet
-    Dim tbl As ListObject
-    Dim i As Long
-    
-    ' Create new worksheet or use existing
-    On Error Resume Next
-    Set ws = ActiveWorkbook.Worksheets(tableName)
-    On Error GoTo 0
-    
-    If ws Is Nothing Then
-        Set ws = ActiveWorkbook.Worksheets.Add
-        ws.Name = tableName
+Private Function GetNodeValue(node As Object) As String
+    If node.hasChildNodes Then
+        GetNodeValue = Left(node.xml, 500) ' Truncate for storage
     Else
-        ws.Cells.Clear
+        GetNodeValue = node.Text
     End If
+End Function
+
+' Utility function to start comparison with folder selection
+Public Sub SelectFoldersAndCompare()
+    Dim folder1 As String, folder2 As String
     
-    ' Create headers
-    With ws
-        .Range("A1:H1").Value = Array("Difference Type", "XPath XML1", "XPath XML2", _
-                                     "Value XML1", "Value XML2", "Description", _
-                                     "Element Type", "Row")
-        
-        ' Format headers
-        With .Range("A1:H1")
-            .Font.Bold = True
-            .Interior.ColorIndex = 15
-            .Borders.Weight = xlThin
-        End With
-        
-        ' Add data
-        For i = 0 To diffCount - 1
-            .Cells(i + 2, 1).Value = differences(i).DifferenceType
-            .Cells(i + 2, 2).Value = differences(i).XPath1
-            .Cells(i + 2, 3).Value = differences(i).XPath2
-            .Cells(i + 2, 4).Value = differences(i).Value1
-            .Cells(i + 2, 5).Value = differences(i).Value2
-            .Cells(i + 2, 6).Value = differences(i).Description
-            .Cells(i + 2, 7).Value = differences(i).ElementType
-            .Cells(i + 2, 8).Value = i + 1
-        Next i
-        
-        ' Create table
-        Set tbl = .ListObjects.Add(xlSrcRange, .Range("A1:H" & (diffCount + 1)), , xlYes)
-        tbl.Name = "XMLDifferences"
-        tbl.TableStyle = "TableStyleMedium2"
-        
-        ' Auto-fit columns
-        .Columns("A:H").AutoFit
-        
-        ' Add filters
-        .Range("A1:H1").AutoFilter
-        
-        ' Freeze panes
-        .Range("A2").Select
-        ActiveWindow.FreezePanes = True
-    End With
+    ' You can replace these with folder picker dialogs
+    folder1 = InputBox("Enter path to first folder:", "Folder 1", "C:\S1000D\Folder1")
+    If folder1 = "" Then Exit Sub
     
-    MsgBox diffCount & " differences found and exported to worksheet '" & tableName & "'", vbInformation
+    folder2 = InputBox("Enter path to second folder:", "Folder 2", "C:\S1000D\Folder2")
+    If folder2 = "" Then Exit Sub
+    
+    Call CompareS1000DFiles(folder1, folder2)
 End Sub
 
-' Example usage function
-Public Sub ExampleUsage()
-    Dim xml1 As MSXML2.DOMDocument60
-    Dim xml2 As MSXML2.DOMDocument60
-    Dim filePath1 As String, filePath2 As String
-    
-    Set xml1 = New MSXML2.DOMDocument60
-    Set xml2 = New MSXML2.DOMDocument60
-    
-    ' Load your S1000D XML files
-    filePath1 = "C:\Path\To\Your\First\S1000D\File.xml"
-    filePath2 = "C:\Path\To\Your\Second\S1000D\File.xml"
-    
-    xml1.Load filePath1
-    xml2.Load filePath2
-    
-    If xml1.parseError.ErrorCode <> 0 Then
-        MsgBox "Error loading XML1: " & xml1.parseError.reason
-        Exit Sub
-    End If
-    
-    If xml2.parseError.ErrorCode <> 0 Then
-        MsgBox "Error loading XML2: " & xml2.parseError.reason
-        Exit Sub
-    End If
-    
-    ' Compare the XML files
-    Dim diffCount As Long
-    diffCount = CompareS1000DXML(xml1, xml2, "S1000D_Differences")
-    
-    Set xml1 = Nothing
-    Set xml2 = Nothing
+# Query to view results
+Public Sub ViewComparisonResults()
+    DoCmd.OpenQuery "SELECT * FROM allDifferences ORDER BY FileName, ElementPath"
 End Sub
