@@ -1,0 +1,55 @@
+Sub ImportExcelWithSkippedRows()
+    Dim xlApp As Object
+    Dim xlWB As Object
+    Dim xlWS As Object
+    Dim tempWS As Object
+    Dim lastRow As Long, lastCol As Long
+    Dim srcFile As String, tmpFile As String
+    Dim headerRow As Long: headerRow = 10
+    Dim dataStart As Long: dataStart = 12
+    Dim tblName As String: tblName = "ImportedData"
+
+    srcFile = "C:\Path\YourFile.xlsx"
+    tmpFile = Environ("TEMP") & "\TempImport.xlsx"
+
+    Set xlApp = CreateObject("Excel.Application")
+    Set xlWB = xlApp.Workbooks.Open(srcFile)
+    Set xlWS = xlWB.Sheets("test1")
+
+    ' Find last used row and column
+    lastRow = xlWS.Cells(xlWS.Rows.Count, "A").End(-4162).Row ' xlUp
+    lastCol = xlWS.Cells(headerRow, xlWS.Columns.Count).End(-4159).Column ' xlToLeft
+
+    ' Create a new workbook to hold just the cleaned data
+    Set tempWS = xlApp.Workbooks.Add.Sheets(1)
+
+    ' Copy header row
+    xlWS.Range(xlWS.Cells(headerRow, 1), xlWS.Cells(headerRow, lastCol)).Copy _
+        tempWS.Range("A1")
+
+    ' Copy data rows starting from row 12
+    xlWS.Range(xlWS.Cells(dataStart, 1), xlWS.Cells(lastRow, lastCol)).Copy _
+        tempWS.Range("A2")
+
+    ' Save the cleaned workbook
+    tempWS.Parent.SaveAs tmpFile
+    tempWS.Parent.Close False
+    xlWB.Close False
+    xlApp.Quit
+
+    Set xlApp = Nothing
+
+    ' Now import the cleaned file into Access
+    On Error Resume Next
+    CurrentDb.Execute "DROP TABLE " & tblName
+    On Error GoTo 0
+
+    DoCmd.TransferSpreadsheet _
+        TransferType:=acImport, _
+        SpreadsheetType:=acSpreadsheetTypeExcel12Xml, _
+        TableName:=tblName, _
+        FileName:=tmpFile, _
+        HasFieldNames:=True
+
+    MsgBox "Import completed into table: " & tblName
+End Sub
