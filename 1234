@@ -1,0 +1,18 @@
+SELECT 
+    t1.LCN,
+    t1.ArticleID,
+    Nz(
+        (
+            SELECT TOP 1 t2.LCN FROM Table2 AS t2
+            WHERE t2.ArticleID = t1.ArticleID AND Left(t1.LCN,8)=Left(t2.LCN,8)
+            AND (SELECT Count(*) FROM Table2 AS t2b 
+                 WHERE t2b.ArticleID=t1.ArticleID AND Left(t1.LCN,8)=Left(t2b.LCN,8))=1
+        ),
+        (
+            SELECT TOP 1 t2.LCN FROM Table2 AS t2
+            WHERE t2.ArticleID = t1.ArticleID AND Left(t1.LCN,6)=Left(t2.LCN,6)
+            AND (SELECT Count(*) FROM Table2 AS t2b 
+                 WHERE t2b.ArticleID=t1.ArticleID AND Left(t1.LCN,6)=Left(t2b.LCN,6))=1
+        )
+    ) AS Unique_Matched_LCN
+FROM Table1 AS t1;
