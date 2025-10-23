@@ -1,0 +1,491 @@
+Option Compare Database
+Option Explicit
+
+' Structure to hold unmatched items
+Type UnmatchedItem
+    ItemID As String
+    NameEN As String
+    NameSXGB As String
+    PossibleMatches As String
+End Type
+
+' Structure to hold match details for testing
+Type MatchDetail
+    Text1 As String
+    Text2 As String
+    IsMatch As Boolean
+    Base1 As String
+    Base2 As String
+    Dir1 As String
+    Dir2 As String
+    Normalized1 As String
+    Normalized2 As String
+End Type
+
+' Main function to match recordsets
+Public Function MatchRecordsets(rsTable1 As DAO.Recordset, rsTable2 As DAO.Recordset, _
+                                locationFieldName As String) As Collection
+    ' Returns a collection of unmatched items that need manual review
+    Dim unmatchedItems As New Collection
+    Dim matchFound As Boolean
+    Dim bestMatch As Variant
+    Dim matchCount As Integer
+    
+    ' Loop through Table1 (logistics items)
+    If Not (rsTable1.EOF And rsTable1.BOF) Then
+        rsTable1.MoveFirst
+        Do While Not rsTable1.EOF
+            matchFound = False
+            bestMatch = Null
+            matchCount = 0
+            
+            ' Try to find match in Table2
+            If Not (rsTable2.EOF And rsTable2.BOF) Then
+                rsTable2.MoveFirst
+                Do While Not rsTable2.EOF
+                    ' Check if this is a potential match
+                    If IsMatch(rsTable1, rsTable2) Then
+                        matchCount = matchCount + 1
+                        bestMatch = rsTable2.Fields(locationFieldName).Value
+                        
+                        ' If we found more than one match, break and mark as ambiguous
+                        If matchCount > 1 Then
+                            Exit Do
+                        End If
+                    End If
+                    rsTable2.MoveNext
+                Loop
+            End If
+            
+            ' Process the match result
+            If matchCount = 1 Then
+                ' Single match found - update Table1 with location
+                rsTable1.Edit
+                rsTable1.Fields(locationFieldName).Value = bestMatch
+                rsTable1.Update
+                matchFound = True
+            ElseIf matchCount > 1 Or matchCount = 0 Then
+                ' Multiple matches or no match - add to unmatched list
+                Dim unmatched As UnmatchedItem
+                unmatched.ItemID = Nz(rsTable1.Fields("ItemID").Value, "")
+                unmatched.NameEN = Nz(rsTable1.Fields("Name(en)").Value, "")
+                unmatched.NameSXGB = Nz(rsTable1.Fields("Name(sx-gb)").Value, "")
+                
+                If matchCount > 1 Then
+                    unmatched.PossibleMatches = "Multiple matches found"
+                Else
+                    unmatched.PossibleMatches = "No match found"
+                End If
+                
+                unmatchedItems.Add unmatched
+            End If
+            
+            rsTable1.MoveNext
+        Loop
+    End If
+    
+    Set MatchRecordsets = unmatchedItems
+End Function
+
+' Helper function to determine if two records match
+Private Function IsMatch(rs1 As DAO.Recordset, rs2 As DAO.Recordset) As Boolean
+    Dim name1_EN As String, name1_SXGB As String
+    Dim name2_EN As String, name2_SXGB As String
+    Dim matchScore As Integer
+    
+    ' Get field values safely
+    name1_EN = Nz(rs1.Fields("Name(en)").Value, "")
+    name1_SXGB = Nz(rs1.Fields("Name(sx-gb)").Value, "")
+    name2_EN = Nz(rs2.Fields("Name(en)").Value, "")
+    name2_SXGB = Nz(rs2.Fields("Name(sx-gb)").Value, "")
+    
+    ' Compare all combinations of name fields
+    matchScore = 0
+    
+    If CompareWithDirectionals(name1_EN, name2_EN) Then matchScore = matchScore + 1
+    If CompareWithDirectionals(name1_EN, name2_SXGB) Then matchScore = matchScore + 1
+    If CompareWithDirectionals(name1_SXGB, name2_EN) Then matchScore = matchScore + 1
+    If CompareWithDirectionals(name1_SXGB, name2_SXGB) Then matchScore = matchScore + 1
+    
+    ' If any combination matches, consider it a match
+    IsMatch = (matchScore > 0)
+End Function
+
+' Compare two strings considering directional indicators
+Private Function CompareWithDirectionals(str1 As String, str2 As String) As Boolean
+    If Len(Trim(str1)) = 0 Or Len(Trim(str2)) = 0 Then
+        CompareWithDirectionals = False
+        Exit Function
+    End If
+    
+    ' Normalize both strings
+    Dim normalized1 As String, normalized2 As String
+    normalized1 = NormalizeDirectionals(str1)
+    normalized2 = NormalizeDirectionals(str2)
+    
+    ' Extract base text and directionals
+    Dim base1 As String, dir1 As String
+    Dim base2 As String, dir2 As String
+    
+    ExtractBaseAndDirectional normalized1, base1, dir1
+    ExtractBaseAndDirectional normalized2, base2, dir2
+    
+    ' Check if base text is similar and directionals match
+    If IsSimilarBase(base1, base2) And DirectionalsMatch(dir1, dir2) Then
+        CompareWithDirectionals = True
+    Else
+        CompareWithDirectionals = False
+    End If
+End Function
+
+' Normalize directional indicators to standard form
+Private Function NormalizeDirectionals(text As String) As String
+    Dim result As String
+    result = UCase(Trim(text))
+    
+    ' Replace common abbreviations with standard forms
+    result = Replace(result, " LF ", " LEFT FRONT ")
+    result = Replace(result, " RF ", " RIGHT FRONT ")
+    result = Replace(result, " LR ", " LEFT REAR ")
+    result = Replace(result, " RR ", " RIGHT REAR ")
+    result = Replace(result, " LH ", " LEFT ")
+    result = Replace(result, " RH ", " RIGHT ")
+    result = Replace(result, " LHF ", " LEFT FRONT ")
+    result = Replace(result, " RHF ", " RIGHT FRONT ")
+    result = Replace(result, " LHR ", " LEFT REAR ")
+    result = Replace(result, " RHR ", " RIGHT REAR ")
+    result = Replace(result, " F ", " FRONT ")
+    result = Replace(result, " R ", " REAR ")
+    result = Replace(result, " L ", " LEFT ")
+    
+    ' Handle cases at start and end of string
+    If Left(result, 3) = "LF " Then result = "LEFT FRONT " & Mid(result, 4)
+    If Left(result, 3) = "RF " Then result = "RIGHT FRONT " & Mid(result, 4)
+    If Right(result, 3) = " LF" Then result = Left(result, Len(result) - 3) & " LEFT FRONT"
+    If Right(result, 3) = " RF" Then result = Left(result, Len(result) - 3) & " RIGHT FRONT"
+    
+    NormalizeDirectionals = result
+End Function
+
+' Extract base text and directional indicators
+Private Sub ExtractBaseAndDirectional(text As String, ByRef baseText As String, ByRef directional As String)
+    Dim words() As String
+    Dim directionalWords As String
+    Dim baseWords As String
+    Dim i As Integer
+    
+    words = Split(Trim(text), " ")
+    directionalWords = ""
+    baseWords = ""
+    
+    For i = LBound(words) To UBound(words)
+        If IsDirectionalWord(words(i)) Then
+            directionalWords = directionalWords & " " & words(i)
+        Else
+            baseWords = baseWords & " " & words(i)
+        End If
+    Next i
+    
+    baseText = Trim(baseWords)
+    directional = Trim(directionalWords)
+End Sub
+
+' Check if a word is a directional indicator
+Private Function IsDirectionalWord(word As String) As Boolean
+    Dim directionals() As Variant
+    directionals = Array("LEFT", "RIGHT", "FRONT", "REAR", "CENTER", "CENTRE", _
+                        "TOP", "BOTTOM", "UPPER", "LOWER", "INNER", "OUTER")
+    
+    Dim i As Integer
+    For i = LBound(directionals) To UBound(directionals)
+        If UCase(Trim(word)) = directionals(i) Then
+            IsDirectionalWord = True
+            Exit Function
+        End If
+    Next i
+    
+    IsDirectionalWord = False
+End Function
+
+' Check if base texts are similar
+Private Function IsSimilarBase(base1 As String, base2 As String) As Boolean
+    ' Simple check: if one contains the other or they're equal
+    If base1 = base2 Then
+        IsSimilarBase = True
+    ElseIf InStr(1, base1, base2, vbTextCompare) > 0 Then
+        IsSimilarBase = True
+    ElseIf InStr(1, base2, base1, vbTextCompare) > 0 Then
+        IsSimilarBase = True
+    Else
+        IsSimilarBase = False
+    End If
+End Function
+
+' Check if directionals match
+Private Function DirectionalsMatch(dir1 As String, dir2 As String) As Boolean
+    ' Both empty - match
+    If Len(dir1) = 0 And Len(dir2) = 0 Then
+        DirectionalsMatch = True
+        Exit Function
+    End If
+    
+    ' Check if they contain the same directional words (order doesn't matter)
+    Dim words1() As String, words2() As String
+    Dim i As Integer, j As Integer
+    Dim allFound As Boolean
+    
+    If Len(dir1) > 0 Then words1 = Split(dir1, " ") Else words1 = Array()
+    If Len(dir2) > 0 Then words2 = Split(dir2, " ") Else words2 = Array()
+    
+    ' If different number of directional words, check if one is subset of other
+    allFound = True
+    For i = LBound(words1) To UBound(words1)
+        Dim found As Boolean
+        found = False
+        For j = LBound(words2) To UBound(words2)
+            If words1(i) = words2(j) Then
+                found = True
+                Exit For
+            End If
+        Next j
+        If Not found Then
+            allFound = False
+            Exit For
+        End If
+    Next i
+    
+    DirectionalsMatch = allFound
+End Function
+
+' Export unmatched items to a table for manual review
+Public Sub ExportUnmatchedToTable(unmatchedItems As Collection, tableName As String)
+    Dim db As DAO.Database
+    Dim rs As DAO.Recordset
+    Dim item As UnmatchedItem
+    Dim i As Integer
+    
+    Set db = CurrentDb
+    
+    ' Create table if it doesn't exist
+    On Error Resume Next
+    db.TableDefs.Delete tableName
+    On Error GoTo 0
+    
+    db.Execute "CREATE TABLE [" & tableName & "] " & _
+               "(ItemID TEXT(50), NameEN TEXT(255), NameSXGB TEXT(255), " & _
+               "PossibleMatches TEXT(255), ManualLocation TEXT(255))"
+    
+    ' Open recordset and add items
+    Set rs = db.OpenRecordset(tableName, dbOpenDynaset)
+    
+    For i = 1 To unmatchedItems.Count
+        item = unmatchedItems(i)
+        rs.AddNew
+        rs.Fields("ItemID").Value = item.ItemID
+        rs.Fields("NameEN").Value = item.NameEN
+        rs.Fields("NameSXGB").Value = item.NameSXGB
+        rs.Fields("PossibleMatches").Value = item.PossibleMatches
+        rs.Update
+    Next i
+    
+    rs.Close
+    Set rs = Nothing
+    Set db = Nothing
+    
+    MsgBox unmatchedItems.Count & " unmatched items exported to " & tableName, vbInformation
+End Sub
+
+' ============================================================================
+' TESTING AND DEMONSTRATION FUNCTIONS
+' ============================================================================
+
+' Main test function - run this to see all examples
+Public Sub TestMatchingExamples()
+    Dim db As DAO.Database
+    Dim rs As DAO.Recordset
+    Dim examples() As Variant
+    Dim i As Integer
+    Dim detail As MatchDetail
+    
+    Set db = CurrentDb
+    
+    ' Create test results table
+    On Error Resume Next
+    db.TableDefs.Delete "MatchingExamples_Results"
+    On Error GoTo 0
+    
+    db.Execute "CREATE TABLE [MatchingExamples_Results] " & _
+               "(ExampleNum INT, Text1 TEXT(255), Text2 TEXT(255), " & _
+               "IsMatch TEXT(10), Normalized1 TEXT(255), Normalized2 TEXT(255), " & _
+               "Base1 TEXT(255), Base2 TEXT(255), " & _
+               "Directional1 TEXT(100), Directional2 TEXT(100))"
+    
+    ' Define test examples
+    examples = GetTestExamples()
+    
+    Set rs = db.OpenRecordset("MatchingExamples_Results", dbOpenDynaset)
+    
+    ' Process each example
+    For i = LBound(examples, 1) To UBound(examples, 1)
+        detail = AnalyzeMatch(CStr(examples(i, 0)), CStr(examples(i, 1)))
+        
+        rs.AddNew
+        rs.Fields("ExampleNum").Value = i + 1
+        rs.Fields("Text1").Value = detail.Text1
+        rs.Fields("Text2").Value = detail.Text2
+        rs.Fields("IsMatch").Value = IIf(detail.IsMatch, "✓ MATCH", "✗ NO MATCH")
+        rs.Fields("Normalized1").Value = detail.Normalized1
+        rs.Fields("Normalized2").Value = detail.Normalized2
+        rs.Fields("Base1").Value = detail.Base1
+        rs.Fields("Base2").Value = detail.Base2
+        rs.Fields("Directional1").Value = detail.Dir1
+        rs.Fields("Directional2").Value = detail.Dir2
+        rs.Update
+    Next i
+    
+    rs.Close
+    Set rs = Nothing
+    Set db = Nothing
+    
+    MsgBox "Testing complete! Open 'MatchingExamples_Results' table to see " & (UBound(examples, 1) - LBound(examples, 1) + 1) & " examples.", vbInformation
+    DoCmd.OpenTable "MatchingExamples_Results"
+End Sub
+
+' Get comprehensive test examples
+Private Function GetTestExamples() As Variant
+    Dim examples() As Variant
+    
+    examples = Array( _
+        Array("Valve Front Left", "Valve Left Front"), _
+        Array("Valve Front Left", "Valve LF"), _
+        Array("Valve LF", "Valve Left Front"), _
+        Array("Valve LHF", "Valve Left Front"), _
+        Array("Front Left Valve", "Valve Left Front"), _
+        Array("LF Valve", "Valve Front Left"), _
+        Array("Valve RF", "Valve Right Front"), _
+        Array("Valve RHF", "Valve Right Front"), _
+        Array("Right Front Valve", "Valve Front Right"), _
+        Array("Valve LR", "Valve Left Rear"), _
+        Array("Valve RR", "Valve Right Rear"), _
+        Array("Sensor Front Left", "Sensor LF"), _
+        Array("Sensor LH", "Sensor Left"), _
+        Array("Sensor RH", "Sensor Right"), _
+        Array("Temperature Sensor Front", "Sensor Front Temperature"), _
+        Array("Pressure Valve Rear Left", "Valve LR Pressure"), _
+        Array("Brake Pad Front Left", "Front Left Brake Pad"), _
+        Array("Brake Pad LF", "Brake Pad Left Front"), _
+        Array("Mirror Left", "Left Side Mirror"), _
+        Array("Mirror LH", "Mirror Left"), _
+        Array("Light Front", "Front Light"), _
+        Array("Light F", "Light Front"), _
+        Array("Light Rear", "Rear Light"), _
+        Array("Light R", "Light Rear"), _
+        Array("Headlight Left", "Left Headlight"), _
+        Array("Headlight LH", "Headlight Left"), _
+        Array("Taillight Right", "Right Taillight"), _
+        Array("Taillight RH", "Taillight Right"), _
+        Array("Tire Front Left", "LF Tire"), _
+        Array("Tire Rear Right", "RR Tire"), _
+        Array("Shock Absorber Front", "Front Shock Absorber"), _
+        Array("Shock Absorber F", "Shock Absorber Front"), _
+        Array("Filter Top", "Top Filter"), _
+        Array("Filter Upper", "Upper Filter"), _
+        Array("Cylinder Left Front", "Front Left Cylinder"), _
+        Array("Hose Inner Left", "Left Inner Hose"), _
+        Array("Hose Outer Right", "Right Outer Hose"), _
+        Array("Panel Left", "Left Panel"), _
+        Array("Panel Right", "Right Panel"), _
+        Array("Cover Front", "Front Cover"), _
+        Array("Cover Rear", "Rear Cover"), _
+        Array("Bolt Front Left Upper", "Upper Left Front Bolt"), _
+        Array("Bolt LF Upper", "Bolt Upper Left Front"), _
+        Array("Spring Front", "Front Spring"), _
+        Array("Spring Rear", "Rear Spring"), _
+        Array("Valve Front Left", "Valve Front Right"), _
+        Array("Valve LF", "Valve RF"), _
+        Array("Sensor Left", "Sensor Right"), _
+        Array("Mirror Front", "Mirror Rear"), _
+        Array("Pump Left", "Filter Left"), _
+        Array("Valve Front", "Sensor Front"), _
+        Array("Brake Front", "Tire Front"), _
+        Array("Left Light", "Right Light"), _
+        Array("Front Panel", "Rear Panel"), _
+        Array("Upper Hose", "Lower Hose"), _
+        Array("Inner Cover", "Outer Cover"), _
+        Array("Valve Assembly LF", "Valve LF"), _
+        Array("Complete Valve Left Front", "Valve Front Left"), _
+        Array("Hydraulic Valve Front", "Front Hydraulic Valve"), _
+        Array("Air Valve Rear Left", "Valve LR Air"), _
+        Array("Pressure Relief Valve Front", "Front Pressure Relief Valve"), _
+        Array("Safety Valve Left", "Left Safety Valve"), _
+        Array("Control Valve Right Front", "RF Control Valve"), _
+        Array("Check Valve Rear", "Rear Check Valve") _
+    )
+    
+    GetTestExamples = examples
+End Function
+
+' Analyze a match and return detailed information
+Private Function AnalyzeMatch(text1 As String, text2 As String) As MatchDetail
+    Dim detail As MatchDetail
+    
+    detail.Text1 = text1
+    detail.Text2 = text2
+    detail.IsMatch = CompareWithDirectionals(text1, text2)
+    
+    ' Get normalized versions
+    detail.Normalized1 = NormalizeDirectionals(text1)
+    detail.Normalized2 = NormalizeDirectionals(text2)
+    
+    ' Extract base and directionals
+    Dim base1 As String, dir1 As String
+    Dim base2 As String, dir2 As String
+    
+    ExtractBaseAndDirectional detail.Normalized1, base1, dir1
+    ExtractBaseAndDirectional detail.Normalized2, base2, dir2
+    
+    detail.Base1 = base1
+    detail.Base2 = base2
+    detail.Dir1 = dir1
+    detail.Dir2 = dir2
+    
+    AnalyzeMatch = detail
+End Function
+
+' Quick test in immediate window - print results directly
+Public Sub QuickTest()
+    Debug.Print "========== MATCHING EXAMPLES =========="
+    Debug.Print ""
+    
+    ' Test various patterns
+    TestPair "Valve Front Left", "Valve Left Front"
+    TestPair "Valve LF", "Valve Left Front"
+    TestPair "Valve LHF", "Valve Front Left"
+    TestPair "Front Left Valve", "Valve LF"
+    TestPair "Valve RF", "Valve Right Front"
+    TestPair "Sensor LH", "Sensor Left"
+    TestPair "Brake Pad LF", "Front Left Brake Pad"
+    TestPair "Mirror Left", "Left Side Mirror"
+    TestPair "Tire RR", "Rear Right Tire"
+    TestPair "Valve Front Left", "Valve Front Right"
+    TestPair "Sensor Left", "Sensor Right"
+    TestPair "Pump Left", "Filter Left"
+    
+    Debug.Print ""
+    Debug.Print "========== END OF TESTS =========="
+End Sub
+
+' Helper for quick test
+Private Sub TestPair(text1 As String, text2 As String)
+    Dim detail As MatchDetail
+    detail = AnalyzeMatch(text1, text2)
+    
+    Debug.Print "Text 1: " & text1
+    Debug.Print "Text 2: " & text2
+    Debug.Print "Match: " & IIf(detail.IsMatch, "✓ YES", "✗ NO")
+    Debug.Print "  Normalized 1: " & detail.Normalized1
+    Debug.Print "  Normalized 2: " & detail.Normalized2
+    Debug.Print "  Base 1: [" & detail.Base1 & "] | Dir 1: [" & detail.Dir1 & "]"
+    Debug.Print "  Base 2: [" & detail.Base2 & "] | Dir 2: [" & detail.Dir2 & "]"
+    Debug.Print ""
+End Sub
