@@ -1,0 +1,62 @@
+Sub ImportExcelWithSafeTypes()
+    Dim fd As Office.FileDialog
+    Dim strPath As String, strTempPath As String
+    Dim xlApp As Object, xlWb As Object, xlWs As Object
+    Dim i As Integer, lastCol As Integer
+    Dim strTable As String
+    
+    strTable = "DeineZielTabelle" ' Name der Tabelle in Access
+
+    ' 1. Datei auswählen
+    Set fd = Application.FileDialog(msoFileDialogFilePicker)
+    If fd.Show = True Then
+        strPath = fd.SelectedItems(1)
+    Else
+        Exit Sub
+    End If
+
+    ' 2. Sicherheitskopie erstellen, um Original nicht zu verändern
+    strTempPath = Environ("TEMP") & "\import_tmp.xlsx"
+    If Dir(strTempPath) <> "" Then Kill strTempPath
+    FileCopy strPath, strTempPath
+
+    ' 3. Excel manipulieren
+    Set xlApp = CreateObject("Excel.Application")
+    Set xlWb = xlApp.Workbooks.Open(strTempPath)
+    Set xlWs = xlWb.Sheets(1)
+
+    ' Alte Header-Zeile (Zeile 1) löschen
+    xlWs.Rows(1).Delete
+    
+    ' Neue Dummy-Zeile ganz oben einfügen (jetzt Zeile 1)
+    xlWs.Rows(1).Insert
+    
+    ' Ermitteln, wie viele Spalten Daten haben
+    lastCol = xlWs.UsedRange.Columns.Count
+    
+    ' Jede Zelle in der ersten Zeile mit Text füllen, um "Text-Typ" zu erzwingen
+    For i = 1 To lastCol
+        xlWs.Cells(1, i).Value = "TXT_DUMMY"
+    Next i
+
+    xlWb.Close SaveChanges:=True
+    xlApp.Quit
+
+    ' 4. Import nach Access (HasFieldNames:=False erzeugt Feld1, Feld2...)
+    DoCmd.TransferSpreadsheet _
+        TransferType:=acImport, _
+        SpreadsheetType:=acSpreadsheetTypeExcel12Xml, _
+        TableName:=strTable, _
+        FileName:=strTempPath, _
+        HasFieldNames:=False
+
+    ' 5. Die Dummy-Zeile aus der Access-Tabelle wieder löschen
+    ' Wir löschen den Datensatz, bei dem Feld1 unser "TXT_DUMMY" ist
+    CurrentDb.Execute "DELETE FROM [" & strTable & "] WHERE [Feld1] = 'TXT_DUMMY';", dbFailOnError
+
+    MsgBox "Import erfolgreich! Alle Spalten wurden als Text behandelt.", vbInformation
+
+    ' Cleanup
+    Set xlWs = Nothing: Set xlWb = Nothing: Set xlApp = Nothing
+    If Dir(strTempPath) <> "" Then Kill strTempPath
+End Sub
