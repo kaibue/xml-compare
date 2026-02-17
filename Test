@@ -1,3 +1,110 @@
+Sub CheckAppendQuery_FinalFix()
+    Dim db As DAO.Database
+    Dim qdf As DAO.QueryDef
+    Dim rsSource As DAO.Recordset
+    Dim tdfTarget As DAO.TableDef
+    Dim fld As DAO.Field
+    Dim targetTable As String
+    Dim selectSQL As String
+    Dim posSelect As Long
+    Dim targetLimit As Integer
+    Dim actualMaxLen As Long
+    
+    Set db = CurrentDb
+    
+    For Each qdf In db.QueryDefs
+        ' Nur Anfügeabfragen (Type 64)
+        If qdf.Type = 64 Then
+            targetTable = GetTargetTable(qdf.SQL)
+            
+            ' Finde den SELECT-Teil der Anfügeabfrage
+            posSelect = InStr(1, qdf.SQL, "SELECT", vbTextCompare)
+            
+            If targetTable <> "" And posSelect > 0 Then
+                Debug.Print "--- Prüfe Abfrage: " & qdf.Name & " ---"
+                
+                ' Wir erstellen einen reinen SELECT-String aus der Anfügeabfrage
+                selectSQL = Mid(qdf.SQL, posSelect)
+                
+                On Error Resume Next
+                Set tdfTarget = db.TableDefs(targetTable)
+                ' WICHTIG: Wir öffnen das Recordset auf den SQL-String, nicht auf das qdf-Objekt!
+                Set rsSource = db.OpenRecordset(selectSQL, dbOpenSnapshot)
+                
+                If Err.Number <> 0 Then
+                    Debug.Print "  !! Fehler beim Öffnen der Quelldaten (evtl. Parameter erforderlich)."
+                    Err.Clear
+                Else
+                    ' Jetzt können wir die Felder sicher durchlaufen
+                    For Each fld In rsSource.Fields
+                        ' Prüfe, ob das Feld in der Zieltabelle existiert
+                        Dim targetFld As DAO.Field
+                        Set targetFld = Nothing
+                        Set targetFld = tdfTarget.Fields(fld.Name)
+                        
+                        If Not targetFld Is Nothing Then
+                            ' Nur Textfelder prüfen
+                            If targetFld.Type = dbText Then
+                                targetLimit = targetFld.Size
+                                
+                                ' Max Länge der tatsächlichen Daten ermitteln
+                                actualMaxLen = GetMaxLenFromSQL(selectSQL, fld.Name)
+                                
+                                If actualMaxLen > targetLimit Then
+                                    Debug.Print "  !! ALARM: [" & fld.Name & "] Daten zu lang! Max: " & _
+                                                actualMaxLen & " > Ziel-Limit: " & targetLimit
+                                Else
+                                    Debug.Print "  OK: [" & fld.Name & "] (Daten: " & actualMaxLen & " / Limit: " & targetLimit & ")"
+                                End If
+                            End If
+                        End If
+                    Next fld
+                    rsSource.Close
+                End If
+                On Error GoTo 0
+            End If
+        End If
+    Next qdf
+    MsgBox "Prüfung abgeschlossen.", vbInformation
+End Sub
+
+' Hilfsfunktion zur Ermittlung der tatsächlichen Datenlänge
+Function GetMaxLenFromSQL(selectSQL As String, fieldName As String) As Long
+    Dim rs As DAO.Recordset
+    Dim strWrapper As String
+    ' Wir bauen ein SELECT Max(Len()) um den ursprünglichen SELECT-Teil
+    strWrapper = "SELECT Max(Len([" & fieldName & "])) FROM (" & selectSQL & ")"
+    
+    On Error Resume Next
+    Set rs = CurrentDb.OpenRecordset(strWrapper, dbOpenForwardOnly)
+    If Err.Number = 0 Then
+        GetMaxLenFromSQL = Nz(rs(0), 0)
+        rs.Close
+    Else
+        GetMaxLenFromSQL = 0
+    End If
+    On Error GoTo 0
+End Function
+
+' Tabellennamen-Extraktor
+Function GetTargetTable(sql As String) As String
+    Dim startPos As Long, endPos As Long
+    Dim temp As String
+    ' Suche nach INSERT INTO
+    startPos = InStr(1, sql, "INSERT INTO ", vbTextCompare)
+    If startPos > 0 Then
+        temp = Trim(Mid(sql, startPos + 12))
+        ' Suche erstes Leerzeichen, Klammer oder SELECT nach dem Namen
+        endPos = InStr(1, temp, " ")
+        If endPos = 0 Or endPos > InStr(1, temp, "(") Then endPos = InStr(1, temp, "(")
+        If endPos = 0 Or (InStr(1, temp, "SELECT") > 0 And endPos > InStr(1, temp, "SELECT")) Then endPos = InStr(1, temp, "SELECT")
+        
+        If endPos > 0 Then
+            GetTargetTable = Replace(Replace(Trim(Left(temp, endPos - 1)), "[", ""), "]", "")
+        End If
+    End If
+End Function
+
 Sub ImportExcelWithSkippedRows()
     Dim xlApp As Object
     Dim xlWB As Object
