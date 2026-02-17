@@ -1,503 +1,497 @@
-Public Sub DebugSingleQuery(strQueryName As String)
+Option Compare Database
+Option Explicit
 
-    Dim db              As DAO.Database
-    Dim qdf             As DAO.QueryDef
-    Dim strTargetTable  As String
-    Dim arrTarget()     As String
-    Dim arrSource()     As String
-    Dim i               As Integer
-
-    Set db = CurrentDb
-    Set qdf = db.QueryDefs(strQueryName)
-
-    Debug.Print "=== RAW SQL ==="
-    Debug.Print qdf.SQL
-    Debug.Print ""
-
-    If ParseAppendSQL(qdf.SQL, strTargetTable, arrTarget, arrSource) Then
-        Debug.Print "Target Table: " & strTargetTable
-        Debug.Print "Field mappings:"
-        For i = 0 To UBound(arrTarget)
-            Debug.Print "  [" & arrSource(i) & "]  -->  [" & arrTarget(i) & "]"
-        Next i
-    Else
-        Debug.Print "PARSE FAILED - check the RAW SQL above"
-    End If
-
-    Set db = Nothing
-
-End Sub
-
-
-'==============================================================================
-' CheckAllAppendQueries
-' Automatically finds ALL append queries in the database, parses their
-' field mappings, checks source data against target field sizes, and logs
-' any violations to tblFieldSizeLog.
+' ============================================================
+'  CheckAppendQueryFieldSizes
+'  Scans all append queries in the current database and logs
+'  any records where a text value exceeds the target field's
+'  maximum length into tblFieldSizeLog.
 '
-' Call this once to audit the entire database before running any appends.
-' Returns: Total violation count across all queries
-'==============================================================================
-Public Function CheckAllAppendQueries() As Long
+'  Requires table: tblFieldSizeLog  (auto-created if missing)
+'    CheckDate      - Date/Time
+'    SourceQuery    - Text(100)
+'    TargetTable    - Text(100)
+'    TargetField    - Text(100)
+'    MaxAllowed     - Long Integer
+'    ActualLength   - Long Integer
+'    OffendingValue - Memo / Long Text
+'    SourceKeyValue - Text(255)
+' ============================================================
+Public Function CheckAppendQueryFieldSizes() As Long
 
-    Dim db              As DAO.Database
-    Dim qdf             As DAO.QueryDef
-    Dim lngTotal        As Long
-    Dim lngQueryHits    As Long
-    Dim strLog          As String
+    Dim db          As DAO.Database
+    Dim qdf         As DAO.QueryDef
+    Dim tdf         As DAO.TableDef
+    Dim fld         As DAO.Field
+    Dim rsLog       As DAO.Recordset
+    Dim rsSource    As DAO.Recordset
 
-    Set db = CurrentDb
+    Dim sSQL        As String
+    Dim sTarget     As String       ' target table name
+    Dim lViolations As Long
+    Dim checkDate   As Date
 
-    ' --- Wipe the log table fresh ---
-    db.Execute "DELETE FROM tblFieldSizeLog", dbFailOnError
+    checkDate = Now()
 
-    lngTotal = 0
+    Set db = CurrentDb()
 
-    ' --- Loop every query in the database ---
+    ' ── 1. Ensure the log table exists ──────────────────────
+    EnsureLogTable db
+
+    Set rsLog = db.OpenRecordset("tblFieldSizeLog", dbOpenDynaset)
+
+    ' ── 2. Loop every query in the database ─────────────────
     For Each qdf In db.QueryDefs
-        ' dbQAction = 128, but we parse SQL to confirm it's an INSERT INTO
-        If qdf.Type = dbQAction Then
-            If IsAppendQuery(qdf.SQL) Then
-                lngQueryHits = CheckSingleAppendQuery(db, qdf)
-                lngTotal = lngTotal + lngQueryHits
-            End If
+
+        ' Skip system / hidden queries
+        If Left(qdf.Name, 1) = "~" Then GoTo NextQuery
+
+        ' Only process append queries (dbQAppend = 64)
+        If qdf.Type <> dbQAppend Then GoTo NextQuery
+
+        sSQL = qdf.SQL
+
+        ' ── 3. Extract the INSERT INTO target table name ────
+        sTarget = ExtractTargetTable(sSQL)
+        If sTarget = "" Then GoTo NextQuery
+
+        ' ── 4. Build a map of  TargetField -> (sourceField, maxSize)
+        '        by comparing INSERT field list with TableDef ──
+        Dim colMap As Collection
+        Set colMap = BuildFieldMap(db, qdf, sTarget)
+        If colMap Is Nothing Then GoTo NextQuery
+        If colMap.Count = 0 Then GoTo NextQuery
+
+        ' ── 5. Open the SELECT side of the append query as a
+        '        read-only snapshot (safe – no data is appended) ─
+        Dim sSelect As String
+        sSelect = BuildSelectSQL(sSQL)
+        If sSelect = "" Then GoTo NextQuery
+
+        On Error Resume Next
+        Set rsSource = db.OpenRecordset(sSelect, dbOpenSnapshot, dbReadOnly)
+        If Err.Number <> 0 Then
+            Err.Clear
+            On Error GoTo 0
+            GoTo NextQuery
         End If
+        On Error GoTo 0
+
+        If rsSource.EOF Then
+            rsSource.Close
+            GoTo NextQuery
+        End If
+
+        ' ── 6. Walk every row in the source recordset ───────
+        Dim keyFieldName As String
+        keyFieldName = GetFirstFieldName(rsSource)
+
+        rsSource.MoveFirst
+        Do While Not rsSource.EOF
+
+            Dim keyVal As String
+            keyVal = SafeString(rsSource.Fields(keyFieldName).Value)
+
+            ' Check each mapped field
+            Dim i As Integer
+            For i = 1 To colMap.Count
+
+                Dim entry      As FieldMapEntry
+                Set entry = colMap(i)
+
+                ' Only check Text / Memo fields with a size cap
+                If entry.MaxSize > 0 Then
+
+                    Dim srcVal As String
+                    On Error Resume Next
+                    srcVal = ""
+                    srcVal = Nz(rsSource.Fields(entry.SourceFieldIndex).Value, "")
+                    On Error GoTo 0
+
+                    Dim actualLen As Long
+                    actualLen = Len(srcVal)
+
+                    If actualLen > entry.MaxSize Then
+
+                        ' ── 7. Write violation to log ───────
+                        rsLog.AddNew
+                            rsLog!CheckDate      = checkDate
+                            rsLog!SourceQuery    = qdf.Name
+                            rsLog!TargetTable    = sTarget
+                            rsLog!TargetField    = entry.TargetFieldName
+                            rsLog!MaxAllowed     = entry.MaxSize
+                            rsLog!ActualLength   = actualLen
+                            rsLog!OffendingValue = Left(srcVal, 1000) ' cap memo
+                            rsLog!SourceKeyValue = keyVal
+                        rsLog.Update
+
+                        lViolations = lViolations + 1
+
+                    End If
+                End If
+            Next i
+
+            rsSource.MoveNext
+        Loop
+
+        rsSource.Close
+
+NextQuery:
+        ' clean up per-query objects
+        Set colMap = Nothing
+        Set rsSource = Nothing
+
     Next qdf
 
-    Set db = Nothing
+    rsLog.Close
 
-    CheckAllAppendQueries = lngTotal
+    Set rsLog    = Nothing
+    Set db       = Nothing
+
+    CheckAppendQueryFieldSizes = lViolations
+
+    If lViolations = 0 Then
+        MsgBox "Check complete. No field size violations found.", vbInformation
+    Else
+        MsgBox "Check complete. " & lViolations & " violation(s) logged to tblFieldSizeLog.", vbExclamation
+    End If
 
 End Function
 
 
-'==============================================================================
-' IsAppendQuery
-' Returns True if the SQL string is an INSERT INTO ... SELECT statement
-'==============================================================================
-Private Function IsAppendQuery(strSQL As String) As Boolean
-    Dim strUpper As String
-    strUpper = UCase(Trim(strSQL))
-    IsAppendQuery = (Left(strUpper, 11) = "INSERT INTO")
+' ============================================================
+'  Helper class substitute – we use a simple Type stored in a
+'  Collection of objects.  Because VBA Collections store
+'  Objects or Variants we wrap the Type in a lightweight class.
+'  To avoid requiring a class module we use a small helper
+'  that packs the data into a Variant array instead.
+' ============================================================
+' Pack: Array(targetFieldName, sourceFieldIndex, maxSize)
+Private Function NewEntry(tFld As String, srcIdx As Integer, _
+                          maxSz As Long) As Variant
+    Dim v(2) As Variant
+    v(0) = tFld
+    v(1) = srcIdx
+    v(2) = maxSz
+    NewEntry = v
 End Function
 
+' Thin accessors so call-sites stay readable
+Private Property Get EntryTarget(v As Variant) As String
+    EntryTarget = v(0)
+End Property
+Private Property Get EntrySourceIdx(v As Variant) As Integer
+    EntrySourceIdx = CInt(v(1))
+End Property
+Private Property Get EntryMaxSize(v As Variant) As Long
+    EntryMaxSize = CLng(v(2))
+End Property
 
-'==============================================================================
-' CheckSingleAppendQuery
-' Parses one append query's SQL, extracts target table + field list,
-' opens the source recordset, and checks each text field for size violations.
-' Logs violations to tblFieldSizeLog.
-'==============================================================================
-Private Function CheckSingleAppendQuery( _
-        db As DAO.Database, _
-        qdf As DAO.QueryDef) As Long
 
-    Dim strSQL          As String
-    Dim strTargetTable  As String
-    Dim arrTargetFields() As String
-    Dim arrSourceFields() As String
-    Dim rsSource        As DAO.Recordset
-    Dim tdTarget        As DAO.TableDef
-    Dim lngViolations   As Long
-    Dim i               As Integer
-    Dim strValue        As String
-    Dim intMaxSize      As Integer
-    Dim strKeyVal       As String
+' ============================================================
+'  BuildFieldMap
+'  Returns a Collection of Variant entries (see NewEntry above)
+'  describing each Text/Memo column that appears in the INSERT
+'  field list and has a defined MaxSize > 0.
+' ============================================================
+Private Function BuildFieldMap(db As DAO.Database, _
+                               qdf As DAO.QueryDef, _
+                               targetTable As String) As Collection
 
-    On Error GoTo ErrHandler
+    On Error GoTo Fail
 
-    lngViolations = 0
-    strSQL = qdf.SQL
+    Dim col     As New Collection
+    Dim tdf     As DAO.TableDef
+    Dim sSQL    As String
+    Dim sInsert As String   ' the "field1, field2, …" part of INSERT INTO
 
-    ' --- Parse the SQL to extract target table and field lists ---
-    If Not ParseAppendSQL(strSQL, strTargetTable, arrTargetFields, arrSourceFields) Then
-        Debug.Print "Could not parse query: " & qdf.Name
-        CheckSingleAppendQuery = 0
+    sSQL = qdf.SQL
+
+    ' ── Extract the parenthesised INSERT field list ──────────
+    '    INSERT INTO tbl (f1,f2,f3) SELECT …
+    Dim posLP As Long, posRP As Long
+    posLP = InStr(1, sSQL, "(", vbTextCompare)
+    ' Make sure the "(" is before SELECT, not inside it
+    Dim posSelect As Long
+    posSelect = InStr(1, UCase(sSQL), " SELECT ")
+    If posSelect = 0 Then posSelect = InStr(1, UCase(sSQL), "SELECT ")
+
+    If posLP = 0 Or posLP > posSelect Then
+        ' No explicit field list – the query relies on column order.
+        ' Map by ordinal position.
+        Set BuildFieldMap = BuildFieldMapByOrdinal(db, qdf, targetTable)
         Exit Function
     End If
 
-    ' --- Get target table definition ---
-    On Error Resume Next
-    Set tdTarget = db.TableDefs(strTargetTable)
-    If Err.Number <> 0 Or tdTarget Is Nothing Then
-        Debug.Print "Target table not found for query: " & qdf.Name & " -> " & strTargetTable
-        Err.Clear
-        On Error GoTo ErrHandler
-        CheckSingleAppendQuery = 0
-        Exit Function
-    End If
-    On Error GoTo ErrHandler
+    posRP = InStr(posLP, sSQL, ")", vbTextCompare)
+    If posRP = 0 Then GoTo Fail
 
-    ' --- Build the SELECT query to get source data ---
-    ' Re-run just the SELECT portion of the append query
-    Dim strSelectSQL    As String
-    strSelectSQL = ExtractSelectPortion(strSQL, arrSourceFields)
+    sInsert = Mid(sSQL, posLP + 1, posRP - posLP - 1)
 
-    If strSelectSQL = "" Then
-        Debug.Print "Could not extract SELECT portion for query: " & qdf.Name
-        CheckSingleAppendQuery = 0
-        Exit Function
-    End If
+    ' Split the insert field list
+    Dim insertFields() As String
+    insertFields = Split(sInsert, ",")
 
-    ' --- Open source recordset ---
-    On Error Resume Next
-    Set rsSource = db.OpenRecordset(strSelectSQL, dbOpenSnapshot)
-    If Err.Number <> 0 Then
-        Debug.Print "Could not open source recordset for query: " & qdf.Name & " - " & Err.Description
-        Err.Clear
-        On Error GoTo ErrHandler
-        CheckSingleAppendQuery = 0
-        Exit Function
-    End If
-    On Error GoTo ErrHandler
+    ' Get the target TableDef so we can look up MaxSize
+    Set tdf = db.TableDefs(targetTable)
 
-    If rsSource.EOF Then GoTo CleanUp
+    ' Open the SELECT part as a recordset so we can map field names
+    Dim sSelect As String
+    sSelect = BuildSelectSQL(sSQL)
+    If sSelect = "" Then GoTo Fail
 
-    ' --- Loop every source record ---
-    Do While Not rsSource.EOF
+    Dim rsCheck As DAO.Recordset
+    Set rsCheck = db.OpenRecordset(sSelect, dbOpenSnapshot, dbReadOnly)
 
-        ' Try to grab first field as a row identifier for the log
+    Dim k As Integer
+    For k = 0 To UBound(insertFields)
+
+        Dim tFldName As String
+        tFldName = Trim(Replace(Replace(insertFields(k), "[", ""), "]", ""))
+
+        ' Look up this field in the target table
+        Dim tFld As DAO.Field
         On Error Resume Next
-        strKeyVal = Nz(rsSource.Fields(0).Value, "(null)")
-        On Error GoTo ErrHandler
+        Set tFld = tdf.Fields(tFldName)
+        On Error GoTo 0
+        If tFld Is Nothing Then GoTo NextField
 
-        ' --- Check each mapped field pair ---
-        For i = 0 To UBound(arrTargetFields)
+        ' Only care about Text fields with a meaningful size
+        If tFld.Type <> dbText And tFld.Type <> dbMemo Then GoTo NextField
 
-            ' Only care about text fields in the target
-            On Error Resume Next
-            Dim fldType As Integer
-            fldType = tdTarget.Fields(arrTargetFields(i)).Type
-            If Err.Number <> 0 Then
-                Err.Clear
-                On Error GoTo ErrHandler
-                GoTo NextField
-            End If
-            On Error GoTo ErrHandler
+        Dim maxSz As Long
+        If tFld.Type = dbMemo Then
+            maxSz = 65535   ' practical Memo cap for checking
+        Else
+            maxSz = tFld.Size
+        End If
 
-            If fldType <> dbText Then GoTo NextField
-
-            intMaxSize = tdTarget.Fields(arrTargetFields(i)).Size
-
-            ' Get the source value safely
-            On Error Resume Next
-            strValue = Nz(rsSource.Fields(i).Value, "")
-            If Err.Number <> 0 Then
-                Err.Clear
-                strValue = ""
-            End If
-            On Error GoTo ErrHandler
-
-            ' --- Log if too long ---
-            If Len(strValue) > intMaxSize Then
-                lngViolations = lngViolations + 1
-                LogViolation db, qdf.Name, strTargetTable, _
-                             arrTargetFields(i), intMaxSize, _
-                             strValue, strKeyVal
-            End If
+        ' Find the corresponding column index in the SELECT recordset
+        ' The k-th INSERT field maps to the k-th SELECT column.
+        Dim srcIdx As Integer
+        If k <= rsCheck.Fields.Count - 1 Then
+            srcIdx = k
+            col.Add NewEntry(tFldName, srcIdx, maxSz)
+        End If
 
 NextField:
-        Next i
+        Set tFld = Nothing
+    Next k
 
-        rsSource.MoveNext
-    Loop
+    rsCheck.Close
+    Set rsCheck = Nothing
+    Set tdf = Nothing
 
-CleanUp:
-    If Not rsSource Is Nothing Then rsSource.Close
-    Set rsSource = Nothing
-    Set tdTarget = Nothing
-
-    CheckSingleAppendQuery = lngViolations
+    Set BuildFieldMap = col
     Exit Function
 
-ErrHandler:
-    Debug.Print "Error in CheckSingleAppendQuery [" & qdf.Name & "]: " & _
-                Err.Number & " - " & Err.Description
-    Resume CleanUp
-
+Fail:
+    Set BuildFieldMap = Nothing
 End Function
 
 
-'==============================================================================
-' ParseAppendSQL
-' Parses "INSERT INTO tblTarget (F1, F2) SELECT S1, S2 FROM ..."
-'==============================================================================
-Private Function ParseAppendSQL( _
-        strSQL As String, _
-        ByRef strTargetTable As String, _
-        ByRef arrTargetFields() As String, _
-        ByRef arrSourceFields() As String) As Boolean
+' ============================================================
+'  BuildFieldMapByOrdinal
+'  Used when the INSERT INTO has no explicit field list.
+'  Maps SELECT columns to target table fields by position.
+' ============================================================
+Private Function BuildFieldMapByOrdinal(db As DAO.Database, _
+                                        qdf As DAO.QueryDef, _
+                                        targetTable As String) As Collection
+    On Error GoTo Fail
 
-    Dim strUpper        As String
-    Dim posInto         As Long
-    Dim posOpenPar      As Long
-    Dim posClosePar     As Long
-    Dim posSelect       As Long
-    Dim posFrom         As Long
-    Dim strFieldBlock   As String
-    Dim strSelectBlock  As String
+    Dim col     As New Collection
+    Dim tdf     As DAO.TableDef
+    Dim sSelect As String
 
-    On Error GoTo ParseFail
+    Set tdf = db.TableDefs(targetTable)
+    sSelect = BuildSelectSQL(qdf.SQL)
+    If sSelect = "" Then GoTo Fail
 
-    strUpper = UCase(strSQL)
+    Dim rsCheck As DAO.Recordset
+    Set rsCheck = db.OpenRecordset(sSelect, dbOpenSnapshot, dbReadOnly)
 
-    ' --- Find INSERT INTO ---
-    posInto = InStr(strUpper, "INSERT INTO")
-    If posInto = 0 Then GoTo ParseFail
+    Dim i As Integer
+    For i = 0 To rsCheck.Fields.Count - 1
 
-    ' --- Find opening parenthesis for target field list ---
-    posOpenPar = InStr(posInto, strSQL, "(")
-    posSelect  = InStr(strUpper, "SELECT")
-    If posOpenPar = 0 Or posSelect = 0 Then GoTo ParseFail
+        If i >= tdf.Fields.Count Then Exit For
 
-    ' --- Target table name: between "INSERT INTO" and "(" ---
-    strTargetTable = Trim(Mid(strSQL, posInto + 11, posOpenPar - posInto - 11))
-    strTargetTable = CleanBrackets(strTargetTable)
+        Dim tFld As DAO.Field
+        Set tFld = tdf.Fields(i)
 
-    ' --- Target field list: between "(" and matching ")" before SELECT ---
-    posClosePar = InStr(posOpenPar, strSQL, ")")
-    If posClosePar = 0 Then GoTo ParseFail
+        If tFld.Type = dbText Or tFld.Type = dbMemo Then
+            Dim maxSz As Long
+            If tFld.Type = dbMemo Then
+                maxSz = 65535
+            Else
+                maxSz = tFld.Size
+            End If
+            col.Add NewEntry(tFld.Name, i, maxSz)
+        End If
 
-    strFieldBlock = Mid(strSQL, posOpenPar + 1, posClosePar - posOpenPar - 1)
-    arrTargetFields = SplitFields(strFieldBlock)
+        Set tFld = Nothing
+    Next i
 
-    ' --- Source field list: between SELECT and FROM ---
-    posFrom = FindFromKeyword(strUpper, posSelect)
-    If posFrom = 0 Then
-        Debug.Print "ParseAppendSQL: Could not find FROM in: " & Left(strSQL, 200)
-        GoTo ParseFail
-    End If
+    rsCheck.Close
+    Set rsCheck = Nothing
+    Set tdf = Nothing
 
-    strSelectBlock = Trim(Mid(strSQL, posSelect + 6, posFrom - posSelect - 6))
-    arrSourceFields = SplitFields(strSelectBlock)
-
-    ' --- Field counts must match ---
-    If UBound(arrTargetFields) <> UBound(arrSourceFields) Then
-        Debug.Print "ParseAppendSQL: Field count mismatch in query." & vbCrLf & _
-                    "  Target fields (" & UBound(arrTargetFields) + 1 & "): " & Join(arrTargetFields, ", ") & vbCrLf & _
-                    "  Source fields (" & UBound(arrSourceFields) + 1 & "): " & Join(arrSourceFields, ", ")
-        GoTo ParseFail
-    End If
-
-    ParseAppendSQL = True
+    Set BuildFieldMapByOrdinal = col
     Exit Function
 
-ParseFail:
-    ParseAppendSQL = False
-
+Fail:
+    Set BuildFieldMapByOrdinal = Nothing
 End Function
 
 
-'==============================================================================
-' ExtractSelectPortion
-' Rebuilds the SELECT statement from the append query SQL so we can open
-' it as a recordset. Strips the INSERT INTO ... ( fields ) header and
-' returns just the SELECT ... FROM ... WHERE ... part.
-'==============================================================================
-Private Function ExtractSelectPortion( _
-        strSQL As String, _
-        arrSourceFields() As String) As String
+' ============================================================
+'  ExtractTargetTable
+'  Parses "INSERT INTO tableName" or "INSERT INTO [tableName]"
+' ============================================================
+Private Function ExtractTargetTable(sSQL As String) As String
 
-    Dim strUpper  As String
-    Dim posSelect As Long
+    Dim sUpper  As String
+    Dim posInto As Long
+    Dim rest    As String
+    Dim parts() As String
 
-    strUpper  = UCase(strSQL)
-    posSelect = InStr(strUpper, "SELECT")
-
-    If posSelect = 0 Then
-        ExtractSelectPortion = ""
+    sUpper  = UCase(sSQL)
+    posInto = InStr(1, sUpper, "INSERT INTO ")
+    If posInto = 0 Then
+        ExtractTargetTable = ""
         Exit Function
     End If
 
-    ' Return everything from SELECT onwards — this is the full runnable query
-    ExtractSelectPortion = Trim(Mid(strSQL, posSelect))
+    rest = Trim(Mid(sSQL, posInto + 12))   ' skip "INSERT INTO "
 
-End Function
-
-
-'==============================================================================
-' FindFromKeyword
-' Finds the position of the main FROM keyword, handling spaces, linebreaks,
-' tabs, and skipping any FROM inside subqueries/parentheses.
-'==============================================================================
-Private Function FindFromKeyword(strUpper As String, posStart As Integer) As Long
-
-    Dim i       As Long
-    Dim depth   As Integer
-    Dim c       As String
-
-    depth = 0
-
-    For i = posStart To Len(strUpper) - 3
-        c = Mid(strUpper, i, 1)
-
-        If c = "(" Then
-            depth = depth + 1
-        ElseIf c = ")" Then
-            depth = depth - 1
-        ElseIf depth = 0 Then
-            ' Match FROM surrounded by any whitespace or start/end of string
-            If Mid(strUpper, i, 4) = "FROM" Then
-                ' Check the character BEFORE is not a letter/digit (word boundary)
-                Dim charBefore As String
-                Dim charAfter  As String
-                charBefore = Mid(strUpper, i - 1, 1)
-                charAfter  = Mid(strUpper, i + 4, 1)
-
-                Dim validBefore As Boolean
-                Dim validAfter  As Boolean
-
-                validBefore = (i = 1) Or (charBefore = " ") Or _
-                              (charBefore = Chr(9)) Or (charBefore = Chr(10)) Or _
-                              (charBefore = Chr(13)) Or (charBefore = ")")
-
-                validAfter  = (charAfter = " ") Or (charAfter = Chr(9)) Or _
-                              (charAfter = Chr(10)) Or (charAfter = Chr(13)) Or _
-                              (charAfter = "[")
-
-                If validBefore And validAfter Then
-                    FindFromKeyword = i
-                    Exit Function
-                End If
-            End If
+    ' rest now starts with the table name (possibly bracketed)
+    If Left(rest, 1) = "[" Then
+        Dim posClose As Long
+        posClose = InStr(2, rest, "]")
+        If posClose > 0 Then
+            ExtractTargetTable = Mid(rest, 2, posClose - 2)
         End If
-    Next i
+    Else
+        ' Table name ends at first space or "("
+        Dim posSpace As Long, posLP As Long
+        posSpace = InStr(1, rest, " ")
+        posLP    = InStr(1, rest, "(")
 
-    FindFromKeyword = 0
+        Dim endPos As Long
+        If posSpace = 0 Then posSpace = Len(rest) + 1
+        If posLP    = 0 Then posLP    = Len(rest) + 1
+        endPos = IIf(posSpace < posLP, posSpace, posLP) - 1
 
-End Function
-
-
-
-'==============================================================================
-' SplitFields
-' Splits a comma-separated field list, respecting brackets and parentheses.
-' Cleans brackets from each field name.
-'==============================================================================
-Private Function SplitFields(strFields As String) As String()
-
-    Dim arrResult()     As String
-    Dim colFields       As New Collection
-    Dim i               As Integer
-    Dim depth           As Integer
-    Dim strCurrent      As String
-    Dim c               As String
-
-    depth = 0
-    strCurrent = ""
-
-    For i = 1 To Len(strFields)
-        c = Mid(strFields, i, 1)
-
-        If c = "(" Or c = "[" Then
-            depth = depth + 1
-            strCurrent = strCurrent & c
-        ElseIf c = ")" Or c = "]" Then
-            depth = depth - 1
-            strCurrent = strCurrent & c
-        ElseIf c = "," And depth = 0 Then
-            colFields.Add CleanFieldAlias(Trim(strCurrent))
-            strCurrent = ""
-        Else
-            strCurrent = strCurrent & c
-        End If
-    Next i
-
-    ' Add last field
-    If Trim(strCurrent) <> "" Then
-        colFields.Add CleanFieldAlias(Trim(strCurrent))
+        ExtractTargetTable = Left(rest, endPos)
     End If
 
-    ReDim arrResult(0 To colFields.Count - 1)
-    For i = 1 To colFields.Count
-        arrResult(i - 1) = colFields(i)
-    Next i
-
-    SplitFields = arrResult
-
 End Function
 
 
-'==============================================================================
-' CleanBrackets
-' Removes surrounding square brackets or backticks from a name
-'==============================================================================
-Private Function CleanBrackets(strName As String) As String
-    strName = Trim(strName)
-    If Left(strName, 1) = "[" And Right(strName, 1) = "]" Then
-        strName = Mid(strName, 2, Len(strName) - 2)
+' ============================================================
+'  BuildSelectSQL
+'  Strips the INSERT INTO … part and returns only the SELECT.
+' ============================================================
+Private Function BuildSelectSQL(sSQL As String) As String
+
+    Dim posSelect As Long
+    posSelect = InStr(1, UCase(sSQL), " SELECT ")
+    If posSelect = 0 Then
+        posSelect = InStr(1, UCase(sSQL), vbCrLf & "SELECT ")
     End If
-    CleanBrackets = strName
+    If posSelect = 0 Then
+        posSelect = InStr(1, UCase(sSQL), "SELECT ")
+    End If
+
+    If posSelect = 0 Then
+        BuildSelectSQL = ""
+    Else
+        BuildSelectSQL = Trim(Mid(sSQL, posSelect))
+    End If
+
 End Function
 
 
-'==============================================================================
-' CleanFieldAlias
-' For source fields, strips any alias (e.g. "SomeExpr AS Alias" -> "SomeExpr AS Alias"
-' kept as-is for the recordset, but for target fields we just strip brackets.
-'==============================================================================
-Private Function CleanFieldAlias(strField As String) As String
-    ' For target fields: just remove brackets
-    ' For source expressions: keep as-is (the recordset handles them positionally)
-    CleanFieldAlias = CleanBrackets(strField)
+' ============================================================
+'  GetFirstFieldName  – used as a "key" value in the log
+' ============================================================
+Private Function GetFirstFieldName(rs As DAO.Recordset) As String
+    If rs.Fields.Count > 0 Then
+        GetFirstFieldName = rs.Fields(0).Name
+    Else
+        GetFirstFieldName = ""
+    End If
 End Function
 
 
-'==============================================================================
-' LogViolation
-' Inserts one violation record into tblFieldSizeLog
-'==============================================================================
-Private Sub LogViolation( _
-        db As DAO.Database, _
-        strQueryName As String, _
-        strTargetTable As String, _
-        strTargetField As String, _
-        intMaxAllowed As Integer, _
-        strOffendingValue As String, _
-        strKeyValue As String)
+' ============================================================
+'  SafeString  – Null-safe converter
+' ============================================================
+Private Function SafeString(v As Variant) As String
+    If IsNull(v) Or IsEmpty(v) Then
+        SafeString = "(null)"
+    Else
+        SafeString = CStr(v)
+    End If
+End Function
 
-    Dim strSQL As String
 
-    strSQL = "INSERT INTO tblFieldSizeLog " & _
-             "(CheckDate, SourceQuery, TargetTable, TargetField, " & _
-             " MaxAllowed, ActualLength, OffendingValue, SourceKeyValue) " & _
-             "VALUES (" & _
-             "Now(), " & _
-             "'" & Replace(strQueryName, "'", "''") & "', " & _
-             "'" & Replace(strTargetTable, "'", "''") & "', " & _
-             "'" & Replace(strTargetField, "'", "''") & "', " & _
-             intMaxAllowed & ", " & _
-             Len(strOffendingValue) & ", " & _
-             "'" & Replace(Left(strOffendingValue, 250), "'", "''") & "', " & _
-             "'" & Replace(Left(strKeyValue, 250), "'", "''") & "'" & _
-             ")"
+' ============================================================
+'  EnsureLogTable
+'  Creates tblFieldSizeLog if it does not already exist.
+' ============================================================
+Private Sub EnsureLogTable(db As DAO.Database)
 
+    Const TBL As String = "tblFieldSizeLog"
+
+    ' Check if already exists
+    Dim tdf As DAO.TableDef
     On Error Resume Next
-    db.Execute strSQL, dbFailOnError
-    If Err.Number <> 0 Then
-        Debug.Print "Failed to log violation: " & Err.Description
-        Err.Clear
-    End If
+    Set tdf = db.TableDefs(TBL)
     On Error GoTo 0
 
-End Sub
+    If Not tdf Is Nothing Then Exit Sub   ' already there
 
-Public Sub RunDatabaseFieldSizeCheck()
+    Set tdf = db.CreateTableDef(TBL)
 
-    Dim lngTotal As Long
+    Dim fld As DAO.Field
 
-    DoCmd.Hourglass True
-    lngTotal = CheckAllAppendQueries()
-    DoCmd.Hourglass False
+    ' CheckDate
+    Set fld = tdf.CreateField("CheckDate", dbDate)
+    tdf.Fields.Append fld
 
-    If lngTotal = 0 Then
-        MsgBox "All clear! No field size violations found across any append queries.", _
-               vbInformation, "Field Size Check Complete"
-    Else
-        MsgBox lngTotal & " violation(s) found across all append queries." & vbCrLf & vbCrLf & _
-               "Open tblFieldSizeLog to see the full breakdown.", _
-               vbExclamation, "Field Size Violations Found"
-        DoCmd.OpenTable "tblFieldSizeLog", acViewNormal
-    End If
+    ' SourceQuery
+    Set fld = tdf.CreateField("SourceQuery", dbText, 100)
+    tdf.Fields.Append fld
+
+    ' TargetTable
+    Set fld = tdf.CreateField("TargetTable", dbText, 100)
+    tdf.Fields.Append fld
+
+    ' TargetField
+    Set fld = tdf.CreateField("TargetField", dbText, 100)
+    tdf.Fields.Append fld
+
+    ' MaxAllowed
+    Set fld = tdf.CreateField("MaxAllowed", dbLong)
+    tdf.Fields.Append fld
+
+    ' ActualLength
+    Set fld = tdf.CreateField("ActualLength", dbLong)
+    tdf.Fields.Append fld
+
+    ' OffendingValue  (Memo for long values)
+    Set fld = tdf.CreateField("OffendingValue", dbMemo)
+    tdf.Fields.Append fld
+
+    ' SourceKeyValue
+    Set fld = tdf.CreateField("SourceKeyValue", dbText, 255)
+    tdf.Fields.Append fld
+
+    db.TableDefs.Append tdf
+    db.TableDefs.Refresh
+
+    Set fld = Nothing
+    Set tdf = Nothing
 
 End Sub
