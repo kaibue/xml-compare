@@ -1,3 +1,118 @@
+Sub CheckAppendQueryFields_Fixed()
+    Dim db As DAO.Database
+    Dim qdf As DAO.QueryDef
+    Dim rsSource As DAO.Recordset
+    Dim tdfTarget As DAO.TableDef
+    Dim fld As DAO.Field
+    Dim targetTable As String
+    Dim targetFieldName As String
+    Dim maxLenInSource As Long
+    Dim targetLimit As Integer
+    
+    Set db = CurrentDb
+    
+    For Each qdf In db.QueryDefs
+        ' Typ 64 = Anfügeabfrage
+        If qdf.Type = 64 Then
+            targetTable = GetTargetTable(qdf.SQL)
+            
+            If targetTable <> "" Then
+                Debug.Print "--- Prüfe: " & qdf.Name & " -> Ziel: " & targetTable & " ---"
+                
+                On Error Resume Next
+                Set tdfTarget = db.TableDefs(targetTable)
+                If Err.Number <> 0 Then
+                    Debug.Print "  !! Ziel-Tabelle [" & targetTable & "] nicht gefunden."
+                    On Error GoTo 0
+                Else
+                    On Error GoTo 0
+                    
+                    ' TRICK: Wir öffnen ein Recordset auf Basis der Abfrage, 
+                    ' aber ohne Daten zu laden (dbReadOnly + dbOpenSnapshot)
+                    ' Das erzwingt, dass Access die Feldstruktur erkennt.
+                    Set rsSource = qdf.OpenRecordset(dbOpenSnapshot)
+                    
+                    ' Jetzt können wir die Felder des Recordsets durchlaufen
+                    For Each fld In rsSource.Fields
+                        targetFieldName = fld.Name
+                        
+                        ' Prüfen, ob das Feld in der Zieltabelle existiert
+                        On Error Resume Next
+                        targetLimit = tdfTarget.Fields(targetFieldName).Size
+                        
+                        If Err.Number = 0 Then
+                            ' Nur Textfelder prüfen (dbText = 10)
+                            If tdfTarget.Fields(targetFieldName).Type = dbText Then
+                                
+                                ' Jetzt die tatsächliche max. Länge der Daten in der Quelle messen
+                                ' Wir nutzen das Recordset, das wir gerade geöffnet haben
+                                maxLenInSource = GetMaxLenFromRS(qdf.SQL, fld.Name)
+                                
+                                If maxLenInSource > targetLimit Then
+                                    Debug.Print "  !! FEHLER: [" & targetFieldName & "] Max-Daten: " & _
+                                                maxLenInSource & " > Limit: " & targetLimit
+                                Else
+                                    Debug.Print "  OK: [" & targetFieldName & "] (Max: " & maxLenInSource & ")"
+                                End If
+                            End If
+                        End If
+                        Err.Clear
+                        On Error GoTo 0
+                    Next fld
+                    rsSource.Close
+                End If
+            End If
+        End If
+    Next qdf
+    MsgBox "Prüfung abgeschlossen.", vbInformation
+End Sub
+
+' Hilfsfunktion um die maximale Länge eines Feldes in einer SQL-Quelle zu finden
+Function GetMaxLenFromRS(originalSQL As String, fieldName As String) As Long
+    Dim rs As DAO.Recordset
+    Dim selectSQL As String
+    Dim posSelect As Long
+    
+    ' Wir bauen den INSERT Teil um in einen SELECT Teil, um die Daten zu messen
+    ' Das ist nötig, da man auf INSERT-SQL kein Max(Len()) machen kann
+    posSelect = InStr(1, originalSQL, "SELECT", vbTextCompare)
+    
+    If posSelect > 0 Then
+        selectSQL = Mid(originalSQL, posSelect)
+        ' Wir kapseln das in ein Sub-Select um die Länge zu messen
+        selectSQL = "SELECT Max(Len([" & fieldName & "])) FROM (" & selectSQL & ")"
+        
+        On Error Resume Next
+        Set rs = CurrentDb.OpenRecordset(selectSQL, dbOpenForwardOnly)
+        If Err.Number = 0 Then
+            GetMaxLenFromRS = Nz(rs(0), 0)
+            rs.Close
+        Else
+            GetMaxLenFromRS = 0
+        End If
+        On Error GoTo 0
+    End If
+End Function
+
+' Die bekannte Hilfsfunktion (etwas robuster)
+Function GetTargetTable(sql As String) As String
+    Dim startPos As Long, endPos As Long
+    Dim temp As String
+    startPos = InStr(1, sql, "INSERT INTO ", vbTextCompare)
+    If startPos > 0 Then
+        temp = Mid(sql, startPos + 12)
+        temp = Trim(temp)
+        ' Suche Ende des Tabellennamens (Leerzeichen, Klammer oder SELECT)
+        endPos = InStr(1, temp, " ")
+        If endPos = 0 Or endPos > InStr(1, temp, "(") Then endPos = InStr(1, temp, "(")
+        If endPos = 0 Or endPos > InStr(1, temp, "SELECT") Then endPos = InStr(1, temp, "SELECT")
+        
+        If endPos > 0 Then
+            GetTargetTable = Replace(Replace(Trim(Left(temp, endPos - 1)), "[", ""), "]", "")
+        End If
+    End If
+End Function
+
 SELECT 
     t1.LCN,
     t1.ArticleID,
