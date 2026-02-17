@@ -1,3 +1,58 @@
+Sub CheckActualDataLengths_Robust()
+    Dim db As DAO.Database
+    Dim qdf As DAO.QueryDef
+    Dim fld As DAO.Field
+    Dim targetTable As String
+    Dim sourceTable As String
+    Dim sourceFieldName As String
+    Dim maxDataLen As Long
+    Dim targetSize As Long
+    Dim sqlMax As String
+    Dim rsMax As DAO.Recordset
+    
+    Set db = CurrentDb
+    
+    For Each qdf In db.QueryDefs
+        ' Typ 64 = Anfügeabfrage
+        If qdf.Type = 64 Then
+            targetTable = GetTargetTable(qdf.SQL) ' Ziel bleibt meist gleich extrahierbar
+            
+            Debug.Print "--- Prüfe Abfrage: " & qdf.Name & " (Ziel: " & targetTable & ") ---"
+            
+            For Each fld In qdf.Fields
+                ' Herkunft des Feldes direkt aus den Metadaten der Query beziehen
+                sourceTable = fld.SourceTable
+                sourceFieldName = fld.SourceField
+                
+                ' Nur prüfen, wenn Feld aus einer echten Tabelle stammt und Ziel bekannt ist
+                If sourceTable <> "" And targetTable <> "" Then
+                    On Error Resume Next
+                    ' Größe in der Zieltabelle auslesen
+                    targetSize = db.TableDefs(targetTable).Fields(fld.Name).Size
+                    
+                    If Err.Number = 0 Then
+                        ' Wir bauen eine Mini-Abfrage für genau dieses Feld
+                        sqlMax = "SELECT Max(Len([" & sourceFieldName & "])) FROM [" & sourceTable & "]"
+                        Set rsMax = db.OpenRecordset(sqlMax, dbOpenForwardOnly)
+                        
+                        maxDataLen = Nz(rsMax(0), 0)
+                        rsMax.Close
+                        
+                        If maxDataLen > targetSize Then
+                            Debug.Print "  !! ALARM: [" & fld.Name & "] Daten zu lang! Ist: " & maxDataLen & " | Erlaubt: " & targetSize
+                        Else
+                            Debug.Print "  OK: [" & fld.Name & "] (Max: " & maxDataLen & ")"
+                        End If
+                    End If
+                    On Error GoTo 0
+                End If
+            Next fld
+        End If
+    Next qdf
+    
+    MsgBox "Prüfung beendet. Siehe Direktfenster (Strg+G).", vbInformation
+End Sub
+
 Sub ImportExcelWithSafeTypes()
     Dim fd As Office.FileDialog
     Dim strPath As String, strTempPath As String
