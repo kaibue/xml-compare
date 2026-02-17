@@ -60,3 +60,62 @@ Sub ImportExcelWithSafeTypes()
     Set xlWs = Nothing: Set xlWb = Nothing: Set xlApp = Nothing
     If Dir(strTempPath) <> "" Then Kill strTempPath
 End Sub
+
+
+Sub CheckActualDataLengths()
+    Dim db As DAO.Database
+    Dim qdf As DAO.QueryDef
+    Dim rsSource As DAO.Recordset
+    Dim targetTable As String
+    Dim sourceTable As String
+    Dim fld As DAO.Field
+    Dim maxDataLen As Long
+    Dim targetSize As Long
+    
+    Set db = CurrentDb
+    
+    For Each qdf In db.QueryDefs
+        ' Nur Anfügeabfragen
+        If qdf.Type = 64 Then
+            targetTable = GetTargetTable(qdf.SQL)
+            ' Wir versuchen die Quelltabelle aus dem SELECT-Teil zu fischen
+            sourceTable = GetSourceTable(qdf.SQL)
+            
+            If targetTable <> "" And sourceTable <> "" Then
+                Debug.Print "--- Prüfe Daten von [" & sourceTable & "] nach [" & targetTable & "] ---"
+                
+                For Each fld In qdf.Fields
+                    ' Prüfe nur Textfelder in der Zieltabelle
+                    On Error Resume Next
+                    targetSize = db.TableDefs(targetTable).Fields(fld.Name).Size
+                    If Err.Number = 0 Then
+                        ' Berechne die maximale Länge des Inhalts in der QUELLE
+                        ' Wir nutzen DMax und Len, um den größten Wert zu finden
+                        maxDataLen = Nz(db.OpenRecordset("SELECT Max(Len([" & fld.SourceField & "])) FROM [" & sourceTable & "]").Fields(0), 0)
+                        
+                        If maxDataLen > targetSize Then
+                            Debug.Print "!! KRITISCH: Feld [" & fld.Name & "] enthält Daten mit Länge " & maxDataLen & " (Ziel erlaubt nur " & targetSize & ")"
+                        Else
+                            Debug.Print "OK: [" & fld.Name & "] Max Datenlänge: " & maxDataLen & " / Kapazität: " & targetSize
+                        End If
+                    End If
+                    On Error GoTo 0
+                Next fld
+            End If
+        End If
+    Next qdf
+    MsgBox "Datenprüfung abgeschlossen!", vbInformation
+End Sub
+
+' Hilfsfunktion um die Quelltabelle zu finden (vereinfacht)
+Function GetSourceTable(sql As String) As String
+    Dim posFrom As Long
+    Dim temp As String
+    posFrom = InStr(1, sql, " FROM ", vbTextCompare)
+    If posFrom > 0 Then
+        temp = Mid(sql, posFrom + 6)
+        ' Schneidet zusätzliche Klauseln wie WHERE oder GROUP BY ab
+        If InStr(temp, " ") > 0 Then temp = Left(temp, InStr(temp, " ") - 1)
+        GetSourceTable = Replace(Replace(temp, "[", ""), "]", "")
+    End If
+End Function
