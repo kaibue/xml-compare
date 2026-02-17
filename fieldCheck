@@ -96,39 +96,39 @@ Public Function CheckAppendQueryFieldSizes() As Long
             Dim i As Integer
             For i = 1 To colMap.Count
 
-                Dim entry      As FieldMapEntry
-                Set entry = colMap(i)
+                Dim entryV     As Variant
+                entryV = colMap(i)
 
                 ' Only check Text / Memo fields with a size cap
-                If entry.MaxSize > 0 Then
+                If EntryMaxSize(entryV) > 0 Then
 
                     Dim srcVal As String
                     On Error Resume Next
                     srcVal = ""
-                    srcVal = Nz(rsSource.Fields(entry.SourceFieldIndex).Value, "")
+                    srcVal = Nz(rsSource.Fields(EntrySourceIdx(entryV)).Value, "")
                     On Error GoTo 0
 
                     Dim actualLen As Long
                     actualLen = Len(srcVal)
 
-                    If actualLen > entry.MaxSize Then
+                    If actualLen > EntryMaxSize(entryV) Then
 
                         ' ── 7. Write violation to log ───────
                         rsLog.AddNew
                             rsLog!CheckDate      = checkDate
                             rsLog!SourceQuery    = qdf.Name
                             rsLog!TargetTable    = sTarget
-                            rsLog!TargetField    = entry.TargetFieldName
-                            rsLog!MaxAllowed     = entry.MaxSize
+                            rsLog!TargetField    = EntryTarget(entryV)
+                            rsLog!MaxAllowed     = EntryMaxSize(entryV)
                             rsLog!ActualLength   = actualLen
-                            rsLog!OffendingValue = Left(srcVal, 1000) ' cap memo
+                            rsLog!OffendingValue = Left(srcVal, 1000)
                             rsLog!SourceKeyValue = keyVal
-                        rsLog.Update
+                    rsLog.Update
 
-                        lViolations = lViolations + 1
+                    lViolations = lViolations + 1
 
-                    End If
                 End If
+            End If
             Next i
 
             rsSource.MoveNext
